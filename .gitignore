@@ -1,0 +1,6 @@
+node_modules/
+dist/
+com.charlesbine.t3-deck.sdPlugin/bin/
+com.charlesbine.t3-deck.sdPlugin/logs/
+*.streamDeckPlugin
+.DS_Store

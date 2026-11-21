@@ -1,0 +1,268 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "Actions": [
+    {
+      "Controllers": [
+        "Keypad"
+      ],
+      "Icon": "imgs/action-fleet",
+      "Name": "Fleet Pulse",
+      "States": [
+        {
+          "Image": "imgs/key-default",
+          "ShowTitle": false
+        }
+      ],
+      "Tooltip": "Live T3 Code fleet counts; press to focus and open the highest-priority thread needing you.",
+      "UUID": "com.charlesbine.t3-deck.fleet-attention"
+    },
+    {
+      "Controllers": [
+        "Keypad"
+      ],
+      "Icon": "imgs/action-approve",
+      "Name": "Approve / Answer",
+      "States": [
+        {
+          "Image": "imgs/key-default",
+          "ShowTitle": false
+        }
+      ],
+      "Tooltip": "Short press: approve pending permission (or open pending question). Hold: approve for session.",
+      "UUID": "com.charlesbine.t3-deck.approve"
+    },
+    {
+      "Controllers": [
+        "Keypad"
+      ],
+      "Icon": "imgs/action-stop",
+      "Name": "Stop / Deny",
+      "States": [
+        {
+          "Image": "imgs/key-default",
+          "ShowTitle": false
+        }
+      ],
+      "Tooltip": "Short press: decline pending approval or interrupt active run. Hold: force-stop thread.",
+      "UUID": "com.charlesbine.t3-deck.stop-deny"
+    },
+    {
+      "Controllers": [
+        "Keypad"
+      ],
+      "Icon": "imgs/action-settle",
+      "Name": "Settle / Pin",
+      "States": [
+        {
+          "Image": "imgs/key-default",
+          "ShowTitle": false
+        }
+      ],
+      "Tooltip": "Short press: toggle Settle on focused thread. Hold: toggle Pin.",
+      "UUID": "com.charlesbine.t3-deck.settle-pin"
+    },
+    {
+      "Controllers": [
+        "Keypad"
+      ],
+      "Icon": "imgs/action-new",
+      "Name": "New Chat",
+      "States": [
+        {
+          "Image": "imgs/key-default",
+          "ShowTitle": false
+        }
+      ],
+      "Tooltip": "Open a new T3 Code composer.",
+      "UUID": "com.charlesbine.t3-deck.new-thread"
+    },
+    {
+      "Controllers": [
+        "Keypad"
+      ],
+      "Icon": "imgs/action-prompt",
+      "Name": "Send / Steer Prompt",
+      "PropertyInspectorPath": "ui/quick-prompt.html",
+      "States": [
+        {
+          "Image": "imgs/key-default",
+          "ShowTitle": false
+        }
+      ],
+      "Tooltip": "Send or steer a configurable prompt to the focused T3 thread. Hold to open thread.",
+      "UUID": "com.charlesbine.t3-deck.quick-prompt"
+    },
+    {
+      "Controllers": [
+        "Keypad"
+      ],
+      "Icon": "imgs/action-open",
+      "Name": "Open Thread / PR",
+      "States": [
+        {
+          "Image": "imgs/key-default",
+          "ShowTitle": false
+        }
+      ],
+      "Tooltip": "Short press: focus thread in T3 Code. Hold: open linked Pull Request.",
+      "UUID": "com.charlesbine.t3-deck.open-thread"
+    },
+    {
+      "Controllers": [
+        "Keypad"
+      ],
+      "Icon": "imgs/action-snooze",
+      "Name": "Snooze / Sync",
+      "States": [
+        {
+          "Image": "imgs/key-default",
+          "ShowTitle": false
+        }
+      ],
+      "Tooltip": "Short press: snooze focused thread for 1 hour (or unsnooze). Hold: reconnect and resync.",
+      "UUID": "com.charlesbine.t3-deck.snooze-sync"
+    },
+    {
+      "Controllers": [
+        "Keypad"
+      ],
+      "Icon": "imgs/action-slot",
+      "Name": "Thread Slot",
+      "States": [
+        {
+          "Image": "imgs/key-default",
+          "ShowTitle": false
+        }
+      ],
+      "Tooltip": "Displays and opens the thread at this key's slot index.",
+      "UUID": "com.charlesbine.t3-deck.thread-slot"
+    },
+    {
+      "Controllers": [
+        "Encoder"
+      ],
+      "Encoder": {
+        "Icon": "imgs/action-fleet",
+        "TriggerDescription": {
+          "Push": "Open focused thread in T3 Code",
+          "Rotate": "Scrub threads",
+          "Touch": "Cycle filter (Active / Attention / Running / Pinned / All)"
+        },
+        "layout": "layouts/t3-canvas-dial.json"
+      },
+      "Icon": "imgs/action-fleet",
+      "Name": "Thread Navigator",
+      "States": [
+        {
+          "Image": "imgs/key-default",
+          "ShowTitle": false
+        }
+      ],
+      "Tooltip": "Scrub T3 Code threads across all projects with live status, project, and PR badges.",
+      "UUID": "com.charlesbine.t3-deck.thread-dial"
+    },
+    {
+      "Controllers": [
+        "Encoder"
+      ],
+      "Encoder": {
+        "Icon": "imgs/action-model",
+        "TriggerDescription": {
+          "Push": "Apply selected model (or hold/press when idle to toggle Favorites vs All)",
+          "Rotate": "Browse Favorite models (or All models when toggled)",
+          "Touch": "Apply selected model (or tap when idle to toggle Favorites vs All)"
+        },
+        "layout": "layouts/t3-canvas-dial.json"
+      },
+      "Icon": "imgs/action-model",
+      "Name": "Model & Provider",
+      "States": [
+        {
+          "Image": "imgs/key-default",
+          "ShowTitle": false
+        }
+      ],
+      "Tooltip": "Switch models and providers (Claude, Codex, Antigravity, OpenCode) on the focused thread.",
+      "UUID": "com.charlesbine.t3-deck.model-dial"
+    },
+    {
+      "Controllers": [
+        "Encoder"
+      ],
+      "Encoder": {
+        "Icon": "imgs/action-mode",
+        "TriggerDescription": {
+          "Push": "Cycle runtime mode (Ask / Edits / Auto / Full)",
+          "Rotate": "Adjust reasoning effort level",
+          "Touch": "Toggle Plan / Code mode"
+        },
+        "layout": "layouts/t3-canvas-dial.json"
+      },
+      "Icon": "imgs/action-mode",
+      "Name": "Mode & Effort",
+      "States": [
+        {
+          "Image": "imgs/key-default",
+          "ShowTitle": false
+        }
+      ],
+      "Tooltip": "Adjust reasoning effort, runtime permissions, and Plan Mode on the focused thread.",
+      "UUID": "com.charlesbine.t3-deck.mode-dial"
+    },
+    {
+      "Controllers": [
+        "Encoder"
+      ],
+      "Encoder": {
+        "Icon": "imgs/action-usage",
+        "TriggerDescription": {
+          "Push": "Refresh live provider usage limits",
+          "Rotate": "Cycle providers / accounts",
+          "Touch": "Refresh live provider usage limits"
+        },
+        "layout": "layouts/t3-canvas-dial.json"
+      },
+      "Icon": "imgs/action-usage",
+      "Name": "Usage Radar",
+      "States": [
+        {
+          "Image": "imgs/key-default",
+          "ShowTitle": false
+        }
+      ],
+      "Tooltip": "Live session and weekly utilization gauges across all connected T3 Code providers.",
+      "UUID": "com.charlesbine.t3-deck.usage-dial"
+    }
+  ],
+  "Author": "Charles Bine",
+  "Category": "T3 Deck",
+  "CategoryIcon": "imgs/category",
+  "CodePath": "bin/plugin.js",
+  "Description": "Real-time T3 Code mission control for Stream Deck+: live approvals, thread navigation, multi-provider model/effort/mode switching, and usage gauges.",
+  "Icon": "imgs/plugin",
+  "Name": "T3 Deck",
+  "Nodejs": {
+    "Debug": "enabled",
+    "Version": "24"
+  },
+  "OS": [
+    {
+      "MinimumVersion": "13",
+      "Platform": "mac"
+    }
+  ],
+  "Profiles": [
+    {
+      "DeviceType": 7,
+      "DontAutoSwitchWhenInstalled": true,
+      "Name": "profiles/t3-deck-plus",
+      "Readonly": false
+    }
+  ],
+  "SDKVersion": 2,
+  "Software": {
+    "MinimumVersion": "7.1"
+  },
+  "UUID": "com.charlesbine.t3-deck",
+  "Version": "1.0.0.0"
+}

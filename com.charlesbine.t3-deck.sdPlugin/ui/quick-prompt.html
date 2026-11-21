@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>T3 Quick Prompt</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+        font-size: 12px;
+      }
+      body {
+        margin: 0;
+        padding: 12px;
+        background: #2d2d2d;
+        color: #e5e7eb;
+      }
+      .field {
+        margin-bottom: 12px;
+      }
+      label {
+        display: block;
+        margin-bottom: 4px;
+        font-size: 11px;
+        font-weight: 600;
+        color: #9ca3af;
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+      }
+      input,
+      textarea,
+      select {
+        width: 100%;
+        box-sizing: border-box;
+        background: #1f232b;
+        color: #f3f4f6;
+        border: 1px solid #3f4756;
+        border-radius: 6px;
+        padding: 6px 8px;
+        font: inherit;
+      }
+      textarea {
+        min-height: 72px;
+        resize: vertical;
+      }
+      .hint {
+        margin-top: 4px;
+        font-size: 11px;
+        color: #9ca3af;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="field">
+      <label for="label">Button Label</label>
+      <input id="label" type="text" placeholder="CONTINUE" maxlength="14" />
+    </div>
+    <div class="field">
+      <label for="prompt">Prompt Text</label>
+      <textarea id="prompt" placeholder="Continue"></textarea>
+    </div>
+    <div class="field">
+      <label for="mode">Delivery Mode (when running)</label>
+      <select id="mode">
+        <option value="auto">Auto (steer if running, send if idle)</option>
+        <option value="steer">Steer active run</option>
+        <option value="queue">Queue after active run</option>
+      </select>
+      <div class="hint">Hold the key to jump straight to the thread in T3 Code.</div>
+    </div>
+
+    <script>
+      let ws = null;
+      let uuid = null;
+      let currentSettings = {};
+
+      const labelEl = document.getElementById("label");
+      const promptEl = document.getElementById("prompt");
+      const modeEl = document.getElementById("mode");
+
+      function syncInputs() {
+        labelEl.value = currentSettings.label || "CONTINUE";
+        promptEl.value = currentSettings.prompt || "Continue";
+        modeEl.value = currentSettings.mode || "auto";
+      }
+
+      function saveSettings() {
+        currentSettings = {
+          label: labelEl.value.trim() || "CONTINUE",
+          prompt: promptEl.value.trim() || "Continue",
+          mode: modeEl.value || "auto"
+        };
+        if (ws && ws.readyState === WebSocket.OPEN && uuid) {
+          ws.send(JSON.stringify({ event: "setSettings", context: uuid, payload: currentSettings }));
+        }
+      }
+
+      labelEl.addEventListener("input", saveSettings);
+      promptEl.addEventListener("input", saveSettings);
+      modeEl.addEventListener("change", saveSettings);
+
+      window.connectElgatoStreamDeckSocket = function (inPort, inPropertyInspectorUUID, inRegisterEvent, _inInfo, inActionInfo) {
+        uuid = inPropertyInspectorUUID;
+        try {
+          const parsed = JSON.parse(inActionInfo);
+          currentSettings = (parsed && parsed.payload && parsed.payload.settings) || {};
+        } catch {}
+        syncInputs();
+
+        ws = new WebSocket("ws://127.0.0.1:" + inPort);
+        ws.onopen = function () {
+          ws.send(JSON.stringify({ event: inRegisterEvent, uuid: uuid }));
+        };
+        ws.onmessage = function (ev) {
+          try {
+            const msg = JSON.parse(ev.data);
+            if (msg.event === "didReceiveSettings" && msg.payload && msg.payload.settings) {
+              currentSettings = msg.payload.settings;
+              syncInputs();
+            }
+          } catch {}
+        };
+      };
+    </script>
+  </body>
+</html>
