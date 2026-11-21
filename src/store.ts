@@ -109,8 +109,12 @@ const CATEGORY_RANK: Record<ThreadCategory, number> = {
   idle: 6
 };
 
+export function threadOpenedTimestamp(thread: ThreadShell): number {
+  return typeof thread.opens?.openedAt === "number" ? thread.opens.openedAt : 0;
+}
+
 export function threadVisitTimestamp(thread: ThreadShell): number {
-  const openedAt = typeof thread.opens?.openedAt === "number" ? thread.opens.openedAt : 0;
+  const openedAt = threadOpenedTimestamp(thread);
   const visitedAt = thread.lastVisitedAt ? Date.parse(thread.lastVisitedAt) || 0 : 0;
   return Math.max(openedAt, visitedAt);
 }
@@ -292,6 +296,8 @@ export class T3Store {
   filterMode: ThreadFilterMode = "active";
   modelScope: ModelCatalogScope = "favorites";
   focusedThreadId: string | null = null;
+  private lastAppOpenedThreadId: string | null = null;
+  private lastManualScrubAt = 0;
   usageIndex = 0;
 
   /** While user is spinning the Model dial, holds the preview index before press-to-apply. */
@@ -385,6 +391,7 @@ export class T3Store {
     const mostRecent = this.findMostRecentlyVisitedThread();
     if (mostRecent) {
       this.focusedThreadId = mostRecent.id;
+      this.lastAppOpenedThreadId = mostRecent.id;
     } else {
       this.ensureValidFocus();
     }
@@ -412,15 +419,27 @@ export class T3Store {
     } else {
       this.threads.set(thread.id, thread);
 
-      // Follow the user's live focus whenever they open/visit a thread in T3 Code
-      const prevVisit = prev ? threadVisitTimestamp(prev) : 0;
-      const nextVisit = threadVisitTimestamp(thread);
-      const currentFocused = this.focusedThreadId ? this.threads.get(this.focusedThreadId) : null;
-      const currentVisit = currentFocused ? threadVisitTimestamp(currentFocused) : 0;
-      if (nextVisit > prevVisit && nextVisit >= currentVisit && !thread.lineage?.parentThreadId) {
-        if (this.focusedThreadId !== thread.id) {
-          this.focusedThreadId = thread.id;
-          this.clearPendingModel();
+      // Auto-follow only when the user actually switches/opens a thread in T3 Code
+      // (`opens.openedAt` advances), NOT on background `lastVisitedAt` read-watermark ticks
+      // while streaming in an already-open thread (which would fight Dial 1 scrubbing).
+      if (!thread.lineage?.parentThreadId) {
+        const prevOpened = prev ? threadOpenedTimestamp(prev) : 0;
+        const nextOpened = threadOpenedTimestamp(thread);
+        const prevVisited = prev?.lastVisitedAt ? Date.parse(prev.lastVisitedAt) || 0 : 0;
+        const nextVisited = thread.lastVisitedAt ? Date.parse(thread.lastVisitedAt) || 0 : 0;
+
+        const switchedByOpen = nextOpened > prevOpened;
+        const switchedByVisitOnDifferentThread =
+          nextVisited > prevVisited &&
+          thread.id !== this.lastAppOpenedThreadId &&
+          Date.now() - this.lastManualScrubAt > 8_000;
+
+        if (switchedByOpen || switchedByVisitOnDifferentThread) {
+          this.lastAppOpenedThreadId = thread.id;
+          if (this.focusedThreadId !== thread.id) {
+            this.focusedThreadId = thread.id;
+            this.clearPendingModel();
+          }
         }
       }
     }
@@ -591,10 +610,12 @@ export class T3Store {
     const list = this.getFilteredThreads();
     if (list.length === 0) return null;
     const { index } = this.getFocusedIndex();
-    const nextIdx = Math.max(0, Math.min(list.length - 1, (index >= 0 ? index : 0) + ticks));
+    const base = index >= 0 ? index : 0;
+    const nextIdx = ((base + ticks) % list.length + list.length) % list.length;
     const next = list[nextIdx] ?? null;
     if (next) {
       this.focusedThreadId = next.id;
+      this.lastManualScrubAt = Date.now();
       this.clearPendingModel();
       this.emit();
     }

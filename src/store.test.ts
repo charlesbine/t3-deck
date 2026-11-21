@@ -110,7 +110,7 @@ test("live focus follows the thread opened/visited in T3 Code", () => {
   );
   assert.equal(store.getFocusedThread()?.id, "t-b");
 
-  // User clicks into Alpha in T3 Code -> opens.openedAt & lastVisitedAt advance
+  // User clicks into Alpha in T3 Code -> opens.openedAt advances
   store.applyThreadUpdated(
     makeThread({
       id: "t-a",
@@ -121,6 +121,26 @@ test("live focus follows the thread opened/visited in T3 Code", () => {
     "active"
   );
   assert.equal(store.getFocusedThread()?.id, "t-a");
+
+  // User twists Dial 1 to Beta (and wrap-around works in both directions)
+  store.stepFocus(1);
+  assert.equal(store.getFocusedThread()?.id, "t-b");
+  store.stepFocus(-1);
+  assert.equal(store.getFocusedThread()?.id, "t-a");
+  store.stepFocus(-1);
+  assert.equal(store.getFocusedThread()?.id, "t-b");
+
+  // Streaming read-watermark bump on already-open Alpha must NOT yank focus away from Beta
+  store.applyThreadUpdated(
+    makeThread({
+      id: "t-a",
+      title: "Alpha",
+      lastVisitedAt: "2026-11-20T03:05:00Z",
+      opens: { openedAt: Date.parse("2026-11-20T03:00:00Z") }
+    }),
+    "active"
+  );
+  assert.equal(store.getFocusedThread()?.id, "t-b");
 });
 
 test("enrichment-only snapshot merges projects without wiping threads", () => {
