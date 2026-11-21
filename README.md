@@ -60,8 +60,8 @@ Also includes a bonus **Thread Slot** key action in the **T3 Deck** sidebar cate
 ### Option 2 — Build & link from source
 
 ```sh
-git clone https://github.com/charlesbine/t3-stream-deck.git
-cd t3-stream-deck
+git clone https://github.com/metaember/t3-deck.git
+cd t3-deck
 npm install
 npm run typecheck
 npm test
