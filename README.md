@@ -2,7 +2,11 @@
 
 **Real-time [T3 Code](https://github.com/pingdotgg/t3code) mission control for Elgato Stream Deck+.**
 
-Speaks directly to your local T3 Code server over its native Orchestration V2 WebSocket RPC stream (`orchestration.subscribeShell` + `subscribeServerConfig`) and `t3code://` deep links — zero extra daemon, zero polling, and sub-50ms live updates across every provider you connect in T3 Code (Claude, Codex, Antigravity, OpenCode, and more).
+[![CI](https://github.com/charlesbine/t3-deck/actions/workflows/ci.yml/badge.svg)](https://github.com/charlesbine/t3-deck/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Elgato Stream Deck+](https://img.shields.io/badge/hardware-Stream%20Deck%2B-111827.svg)](#mission-control-layout-42-keys--4-full-canvas-dials)
+
+I live in T3 Code all day across Claude, Codex, Antigravity, and OpenCode — so when the Codex Stream Deck plugin dropped, I couldn't resist building native hardware mission control directly for T3 Code. T3 Deck speaks straight to your local T3 Code server over its native Orchestration V2 WebSocket RPC stream (`orchestration.subscribeShell` + `subscribeServerConfig`) and `t3code://` deep links — zero extra daemon, zero polling, and sub-50ms live updates across every provider you connect.
 
 ![T3 Deck on Elgato Stream Deck+](marketing/t3-deck-frame-dark.png)
 
