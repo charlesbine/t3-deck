@@ -16,6 +16,9 @@ import type {
   FleetStats,
   ModelCatalogEntry,
   ModelCatalogScope,
+  PendingApprovalItem,
+  PendingQuestionItem,
+  PromptSuggestion,
   RuntimeMode,
   ThreadCategory,
   ThreadFilterMode,
@@ -192,7 +195,8 @@ export function renderFleetAttentionKey(
 export function renderApproveKey(
   approvalThread: ThreadShell | null,
   focusedThread: ThreadShell | null,
-  toast?: ToastNotice
+  toast?: ToastNotice,
+  pendingCount = 0
 ): string {
   if (toast) return renderToastKey(toast);
 
@@ -206,16 +210,17 @@ export function renderApproveKey(
           : kind === "file-read"
             ? "FILE READ"
             : "APPROVAL";
+    const topText = pendingCount > 1 ? `${kindLabel} · ${pendingCount}` : kindLabel;
     return keyShell(
       "#F59E0B",
       "#362105",
       "#140C03",
       `
-      <text x="72" y="29" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="800" fill="#FCD34D" letter-spacing="0.8">${escXml(kindLabel)}</text>
-      <circle cx="72" cy="64" r="24" fill="#10B981" opacity="0.22" stroke="#34D399" stroke-width="2.5"/>
-      <path d="M61 64l8 8 15-16" fill="none" stroke="#34D399" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
-      <text x="72" y="110" text-anchor="middle" font-family="${FONT}" font-size="17" font-weight="800" fill="#FFFFFF">APPROVE</text>
-      <text x="72" y="128" text-anchor="middle" font-family="${FONT}" font-size="10" font-weight="600" fill="#FCD34D">HOLD: SESSION</text>
+      <text x="72" y="29" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="800" fill="#FCD34D" letter-spacing="0.6">${escXml(truncate(topText, 16))}</text>
+      <circle cx="72" cy="64" r="24" fill="#F59E0B" opacity="0.22" stroke="#FBBF24" stroke-width="2.5"/>
+      <path d="M61 64l8 8 15-16" fill="none" stroke="#FDE68A" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="72" y="110" text-anchor="middle" font-family="${FONT}" font-size="16" font-weight="800" fill="#FFFFFF">APPROVE?</text>
+      <text x="72" y="128" text-anchor="middle" font-family="${FONT}" font-size="10" font-weight="600" fill="#FCD34D">TAP: INSPECT</text>
     `,
       true
     );
@@ -326,30 +331,35 @@ export function renderSettlePinKey(thread: ThreadShell | null, toast?: ToastNoti
     "#090D16",
     `
     <text x="72" y="29" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="800" fill="${accent}" letter-spacing="0.8">${pinned ? "★ PINNED" : "THREAD"}</text>
-    <circle cx="72" cy="63" r="22" fill="${accent}" opacity="0.16" stroke="${accent}" stroke-width="2.5"/>
     ${
       settled
-        ? `<path d="M62 63l7 7 14-14" fill="none" stroke="${accent}" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>`
-        : `<path d="M62 63h20M72 53v20" fill="none" stroke="${accent}" stroke-width="4" stroke-linecap="round"/>`
+        ? `<rect x="50" y="42" width="44" height="44" rx="11" fill="${accent}" opacity="0.22" stroke="${accent}" stroke-width="2.5"/>
+           <path d="M62 60a11 11 0 1 1 3 12M62 52v9h9" fill="none" stroke="${accent}" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/>`
+        : `<rect x="50" y="42" width="44" height="44" rx="11" fill="${accent}" opacity="0.14" stroke="${accent}" stroke-width="2.5"/>
+           <path d="M61 64l7 7 15-15" fill="none" stroke="${accent}" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>`
     }
     <text x="72" y="110" text-anchor="middle" font-family="${FONT}" font-size="16" font-weight="800" fill="#FFFFFF">${settled ? "UNSETTLE" : "SETTLE"}</text>
-    <text x="72" y="128" text-anchor="middle" font-family="${FONT}" font-size="10" font-weight="600" fill="#94A3B8">HOLD: ${pinned ? "UNPIN" : "PIN"}</text>
+    <text x="72" y="128" text-anchor="middle" font-family="${FONT}" font-size="10" font-weight="600" fill="#94A3B8">HOLD: TOOLS</text>
   `
   );
 }
 
-export function renderNewThreadKey(projectName?: string, toast?: ToastNotice): string {
+export function renderNewThreadKey(
+  projectName?: string,
+  toast?: ToastNotice,
+  holdHint = "HOLD: PROJECTS"
+): string {
   if (toast) return renderToastKey(toast);
   return keyShell(
     "#38BDF8",
     "#0D213A",
     "#080F1C",
     `
-    <text x="72" y="29" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="800" fill="#7DD3FC" letter-spacing="0.9">T3 CODE</text>
+    <text x="72" y="29" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="800" fill="#7DD3FC" letter-spacing="0.9">${escXml(truncate((projectName || "T3 CODE").toUpperCase(), 14))}</text>
     <circle cx="72" cy="64" r="23" fill="#38BDF8" opacity="0.18" stroke="#38BDF8" stroke-width="2.5"/>
     <path d="M72 52v24M60 64h24" stroke="#FFFFFF" stroke-width="5" stroke-linecap="round"/>
     <text x="72" y="110" text-anchor="middle" font-family="${FONT}" font-size="16" font-weight="800" fill="#FFFFFF">NEW CHAT</text>
-    <text x="72" y="128" text-anchor="middle" font-family="${FONT}" font-size="10" font-weight="600" fill="#7DD3FC">${escXml(truncate(projectName || "COMPOSER", 14))}</text>
+    <text x="72" y="128" text-anchor="middle" font-family="${FONT}" font-size="10" font-weight="600" fill="#7DD3FC">${escXml(truncate(holdHint, 16))}</text>
   `
   );
 }
@@ -378,7 +388,7 @@ export function renderQuickPromptKey(
     <text x="72" y="29" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="800" fill="${thread ? accent : "#64748B"}" letter-spacing="0.9">${actionTag}</text>
     <path d="M46 66l48-18-18 46-8-20-22-8z" fill="${thread ? accent : "#475569"}" opacity="${thread ? "0.9" : "0.45"}"/>
     <text x="72" y="112" text-anchor="middle" font-family="${FONT}" font-size="15" font-weight="800" fill="${thread ? "#FFFFFF" : "#64748B"}">${escXml(truncate(label.toUpperCase(), 11))}</text>
-    <text x="72" y="129" text-anchor="middle" font-family="${FONT}" font-size="10" font-weight="600" fill="#94A3B8">HOLD: OPEN</text>
+    <text x="72" y="129" text-anchor="middle" font-family="${FONT}" font-size="10" font-weight="600" fill="#94A3B8">HOLD: PROMPTS</text>
   `
   );
 }
@@ -427,7 +437,8 @@ export function renderOpenThreadKey(
 export function renderSnoozeSyncKey(
   thread: ThreadShell | null,
   connected: boolean,
-  toast?: ToastNotice
+  toast?: ToastNotice,
+  defaultShortLabel = "1H"
 ): string {
   if (toast) return renderToastKey(toast);
   if (!connected) {
@@ -444,6 +455,7 @@ export function renderSnoozeSyncKey(
   }
 
   const snoozed = Boolean(thread && isThreadSnoozed(thread));
+  const eta = snoozed && thread?.snoozedUntil ? formatResetCountdown(thread.snoozedUntil) : "";
   const accent = snoozed ? "#F59E0B" : "#818CF8";
   const bgTop = snoozed ? "#2B1C06" : "#181B3A";
 
@@ -452,10 +464,10 @@ export function renderSnoozeSyncKey(
     bgTop,
     "#090D16",
     `
-    <text x="72" y="29" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="800" fill="${accent}" letter-spacing="0.8">${snoozed ? "SNOOZED" : "TRIAGE"}</text>
+    <text x="72" y="29" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="800" fill="${accent}" letter-spacing="0.8">${snoozed ? (eta ? `SNOOZED · ${eta.toUpperCase()}` : "SNOOZED") : "TRIAGE"}</text>
     <path d="M84 52a20 20 0 1 1-22 28 16 16 0 0 0 22-28z" fill="${accent}" opacity="0.9"/>
-    <text x="72" y="110" text-anchor="middle" font-family="${FONT}" font-size="15" font-weight="800" fill="#FFFFFF">${snoozed ? "UNSNOOZE" : "SNOOZE 1H"}</text>
-    <text x="72" y="128" text-anchor="middle" font-family="${FONT}" font-size="10" font-weight="600" fill="#94A3B8">HOLD: RESYNC</text>
+    <text x="72" y="110" text-anchor="middle" font-family="${FONT}" font-size="15" font-weight="800" fill="#FFFFFF">${snoozed ? "UNSNOOZE" : `SNOOZE ${escXml(truncate(defaultShortLabel, 5))}`}</text>
+    <text x="72" y="128" text-anchor="middle" font-family="${FONT}" font-size="10" font-weight="600" fill="#94A3B8">HOLD: ALL TIMES</text>
   `
   );
 }
@@ -509,8 +521,7 @@ function dialShell(accent: string, bgTop: string, bgBottom: string, inner: strin
       <stop offset="100%" stop-color="${bgBottom}"/>
     </linearGradient>
   </defs>
-  <rect width="400" height="200" fill="url(#dbg)"/>
-  <rect x="4" y="4" width="392" height="192" rx="16" fill="none" stroke="${accent}" stroke-opacity="0.45" stroke-width="3"/>
+  <rect x="4" y="4" width="392" height="192" rx="16" fill="url(#dbg)" stroke="${accent}" stroke-opacity="0.45" stroke-width="3"/>
   <rect x="20" y="4" width="360" height="5" rx="2.5" fill="${accent}" opacity="0.9"/>
   ${inner}
 </svg>`;
@@ -553,10 +564,25 @@ export function renderThreadDialCanvas(
   }
 
   const cat = classifyThread(thread);
-  const theme = CATEGORY_THEME[cat];
+  const snoozed = isThreadSnoozed(thread);
+  const settled = isThreadSettled(thread);
+  const snoozeEta = snoozed && thread.snoozedUntil ? formatResetCountdown(thread.snoozedUntil) : "";
+  const baseTheme = CATEGORY_THEME[cat];
+  const theme =
+    snoozed && cat !== "approval" && cat !== "question"
+      ? {
+          accent: "#818CF8",
+          bgTop: "#1A1D3D",
+          bgBottom: "#0A0C1B",
+          badge: snoozeEta ? `SNOOZED · ${snoozeEta.toUpperCase()}` : "SNOOZED"
+        }
+      : settled && cat === "idle"
+        ? { ...baseTheme, badge: "SETTLED" }
+        : baseTheme;
   const pr = primaryPullRequest(thread);
   const modelShort = shortModelLabel(thread.modelSelection?.model ?? "");
   const posText = total > 0 ? `${index + 1}/${total}` : "0/0";
+  const rightPill = snoozed ? "SNOOZED" : filterBadge;
 
   return dialShell(
     theme.accent,
@@ -564,9 +590,9 @@ export function renderThreadDialCanvas(
     theme.bgBottom,
     `
     <circle cx="30" cy="36" r="9" fill="${theme.accent}"/>
-    <text x="48" y="43" font-family="${FONT}" font-size="19" font-weight="800" fill="${theme.accent}" letter-spacing="0.6">${theme.badge}</text>
-    <rect x="210" y="19" width="106" height="30" rx="8" fill="#0F172A" stroke="${theme.accent}" stroke-opacity="0.45" stroke-width="1.5"/>
-    <text x="263" y="40" text-anchor="middle" font-family="${FONT}" font-size="14" font-weight="800" fill="#E2E8F0">${filterBadge}</text>
+    <text x="48" y="43" font-family="${FONT}" font-size="${theme.badge.length > 10 ? "16" : "19"}" font-weight="800" fill="${theme.accent}" letter-spacing="0.5">${escXml(theme.badge)}</text>
+    <rect x="214" y="19" width="102" height="30" rx="8" fill="#0F172A" stroke="${theme.accent}" stroke-opacity="0.45" stroke-width="1.5"/>
+    <text x="265" y="40" text-anchor="middle" font-family="${FONT}" font-size="13" font-weight="800" fill="#E2E8F0">${escXml(rightPill)}</text>
     <text x="378" y="42" text-anchor="end" font-family="${MONO}" font-size="19" font-weight="800" fill="#CBD5E1">${posText}</text>
 
     <text x="24" y="96" font-family="${FONT}" font-size="26" font-weight="800" fill="#FFFFFF">${escXml(truncate(thread.title || "Untitled", 25))}</text>
@@ -818,6 +844,28 @@ export function renderUsageDialCanvas(
     );
   }
 
+  if (card.unavailable && !card.sessionWindow && !card.weeklyWindow && !card.extraWindow) {
+    const headline = /expired|sign-in|auth/i.test(card.unavailable.message ?? "")
+      ? "SIGN-IN EXPIRED"
+      : "LIMITS UNAVAILABLE";
+    const lines = wrapLines(card.unavailable.message ?? "Refresh limits to retry.", 34, 2);
+    return dialShell(
+      "#F59E0B",
+      "#231807",
+      "#0B0F17",
+      `
+      <circle cx="30" cy="34" r="8" fill="${card.accentColor}"/>
+      <text x="48" y="41" font-family="${FONT}" font-size="20" font-weight="800" fill="#FFFFFF">${escXml(truncate(card.label.toUpperCase(), 16))}</text>
+      <text x="376" y="41" text-anchor="end" font-family="${MONO}" font-size="18" font-weight="700" fill="#94A3B8">${index + 1}/${total}</text>
+
+      <text x="24" y="84" font-family="${FONT}" font-size="18" font-weight="800" fill="#FBBF24">⚠ ${headline}</text>
+      <text x="24" y="114" font-family="${FONT}" font-size="15" font-weight="600" fill="#CBD5E1">${escXml(lines[0] ?? "")}</text>
+      ${lines[1] ? `<text x="24" y="136" font-family="${FONT}" font-size="15" font-weight="600" fill="#94A3B8">${escXml(lines[1])}</text>` : ""}
+      <text x="24" y="176" font-family="${FONT}" font-size="14" font-weight="700" fill="#F59E0B">PRESS DIAL TO REFRESH</text>
+    `
+    );
+  }
+
   const row1Win = card.sessionWindow ?? card.weeklyWindow;
   const row1Label = card.sessionWindow ? "SESSION" : (card.weeklyWindow?.label?.toUpperCase() ?? "WEEKLY");
   const row2Win = card.sessionWindow ? (card.weeklyWindow ?? card.extraWindow) : card.extraWindow;
@@ -837,5 +885,701 @@ export function renderUsageDialCanvas(
     ${renderUsageRow(86, row1Label, row1Win)}
     ${renderUsageRow(148, row2Label, row2Win)}
   `
+  );
+}
+
+// ============================================================
+// PANORAMIC 1600x200 OVERLAY ENGINE & SUBMENU KEY RENDERERS
+// ============================================================
+
+export interface PanoramicFrame {
+  accent: string;
+  bgTop: string;
+  bgBottom: string;
+  inner: string;
+}
+
+/**
+ * Slices a unified 1600x200 panoramic frame into a single 400x200 dial viewport (`col` = 0..3).
+ * Because all 4 Stream Deck+ dials sit flush side-by-side with zero gap, the 4 viewBox slices
+ * form one seamless 1600x200 panoramic display.
+ */
+export function slicePanoramicFrame(frame: PanoramicFrame, col: number): string {
+  const clamped = Math.max(0, Math.min(3, col));
+  const vx = clamped * 400;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200" viewBox="${vx} 0 400 200">
+  <defs>
+    <linearGradient id="pbg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="${frame.bgTop}"/>
+      <stop offset="100%" stop-color="${frame.bgBottom}"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="1592" height="192" rx="16" fill="url(#pbg)" stroke="${frame.accent}" stroke-opacity="0.7" stroke-width="3"/>
+  <rect x="24" y="4" width="1552" height="5" rx="2.5" fill="${frame.accent}" opacity="0.95"/>
+  ${frame.inner}
+</svg>`;
+}
+
+/** Renders the full 1600x200 panoramic frame as a single SVG (useful for mockups & tests). */
+export function renderFullPanoramicSvg(frame: PanoramicFrame): string {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="200" viewBox="0 0 1600 200">
+  <defs>
+    <linearGradient id="pbg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="${frame.bgTop}"/>
+      <stop offset="100%" stop-color="${frame.bgBottom}"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="1592" height="192" rx="16" fill="url(#pbg)" stroke="${frame.accent}" stroke-opacity="0.7" stroke-width="3"/>
+  <rect x="24" y="4" width="1552" height="5" rx="2.5" fill="${frame.accent}" opacity="0.95"/>
+  ${frame.inner}
+</svg>`;
+}
+
+function wrapCodeLines(text: string, maxChars: number): string[] {
+  const rawLines = text.replace(/\r\n/g, "\n").split("\n");
+  const out: string[] = [];
+  for (const raw of rawLines) {
+    const trimmed = raw.trimEnd();
+    if (trimmed.length === 0) continue;
+    let remaining = trimmed;
+    while (remaining.length > maxChars) {
+      let splitAt = remaining.lastIndexOf(" ", maxChars);
+      if (splitAt < Math.floor(maxChars * 0.45)) splitAt = maxChars;
+      out.push(remaining.slice(0, splitAt));
+      remaining = remaining.slice(splitAt).trimStart();
+    }
+    if (remaining.length > 0) out.push(remaining);
+  }
+  return out.length > 0 ? out : [""];
+}
+
+export function renderApprovalPanoramicFrame(
+  item: PendingApprovalItem | null,
+  index: number,
+  total: number,
+  scrollLine = 0
+): PanoramicFrame {
+  if (!item) {
+    return {
+      accent: "#10B981",
+      bgTop: "#0B241D",
+      bgBottom: "#070E0D",
+      inner: `
+        <text x="800" y="96" text-anchor="middle" font-family="${FONT}" font-size="32" font-weight="800" fill="#34D399">ALL APPROVALS CLEARED</text>
+        <text x="800" y="138" text-anchor="middle" font-family="${FONT}" font-size="18" font-weight="600" fill="#94A3B8">Press any key to return to Mission Control</text>
+      `
+    };
+  }
+
+  const danger = item.dangerous;
+  const accent = danger ? "#FB7185" : "#F59E0B";
+  const bgTop = danger ? "#380D18" : "#2D1A05";
+  const bgBottom = danger ? "#14060A" : "#110B04";
+
+  const kindLabel =
+    item.requestKind === "command"
+      ? "SHELL CMD"
+      : item.requestKind === "file-change"
+        ? "FILE EDIT"
+        : item.requestKind === "file-read"
+          ? "FILE READ"
+          : item.requestKind === "mcp-elicitation"
+            ? item.appName
+              ? `MCP · ${item.appName.toUpperCase()}`
+              : "MCP ACCESS"
+            : "PERMISSION";
+
+  const actorTitle = item.subagentTitle || item.threadTitle;
+  const isSubagent = Boolean(item.subagentTitle);
+  const posText = `${Math.max(1, index + 1)}/${Math.max(1, total)}`;
+
+  const commandPrefix =
+    item.requestKind === "command"
+      ? "$ "
+      : item.requestKind === "file-change"
+        ? "✎ "
+        : item.requestKind === "file-read"
+          ? "◉ "
+          : "▸ ";
+
+  const rawDetail = item.prompt?.trim()
+    ? `${commandPrefix}${item.prompt.trim()}`
+    : item.detailsLoaded
+      ? `${commandPrefix}${kindLabel} request (press OPEN IN T3 for full context)`
+      : "Loading command details from T3 Code…";
+
+  const allLines = wrapCodeLines(rawDetail, 68);
+  const visibleCount = 3;
+  const maxScroll = Math.max(0, allLines.length - visibleCount);
+  const start = Math.min(Math.max(0, scrollLine), maxScroll);
+  const shown = allLines.slice(start, start + visibleCount);
+  const hasMore = allLines.length > visibleCount;
+
+  const lineY = [64, 96, 128];
+  const codeLinesSvg = shown
+    .map(
+      (line, idx) =>
+        `<text x="468" y="${lineY[idx]}" font-family="${MONO}" font-size="22" font-weight="700" fill="${danger ? "#FFE4E6" : "#F8FAFC"}">${escXml(line)}</text>`
+    )
+    .join("");
+
+  const reasonText = item.reason?.trim()
+    ? truncate(item.reason.trim(), 74)
+    : item.responseCapability === "not_resumable"
+      ? "Provider process stopped — press OPEN IN T3 to restart"
+      : "Press CONFIRM above to approve · DENY to decline";
+
+  return {
+    accent,
+    bgTop,
+    bgBottom,
+    inner: `
+      <!-- Left identity panel (x=20..418) -->
+      <circle cx="34" cy="36" r="8" fill="${accent}"/>
+      <text x="50" y="43" font-family="${FONT}" font-size="18" font-weight="800" fill="${accent}" letter-spacing="0.6">${escXml(truncate(kindLabel, 18))}</text>
+      <rect x="330" y="19" width="80" height="30" rx="8" fill="#0F172A" stroke="${accent}" stroke-opacity="0.55" stroke-width="1.5"/>
+      <text x="370" y="40" text-anchor="middle" font-family="${MONO}" font-size="17" font-weight="800" fill="#FFFFFF">${posText}</text>
+
+      ${
+        danger && item.dangerReason
+          ? `<rect x="24" y="58" width="214" height="24" rx="6" fill="#9F1239" stroke="#FB7185" stroke-width="1.2"/>
+             <text x="36" y="75" font-family="${FONT}" font-size="13" font-weight="800" fill="#FFE4E6">⚠ ${escXml(item.dangerReason)}</text>`
+          : isSubagent
+            ? `<rect x="24" y="58" width="114" height="24" rx="6" fill="#1E1B4B" stroke="#818CF8" stroke-width="1.2"/>
+               <text x="81" y="75" text-anchor="middle" font-family="${FONT}" font-size="13" font-weight="800" fill="#C7D2FE">SUBAGENT</text>`
+            : ""
+      }
+
+      <text x="24" y="${danger || isSubagent ? "116" : "96"}" font-family="${FONT}" font-size="25" font-weight="800" fill="#FFFFFF">${escXml(truncate(actorTitle, 23))}</text>
+      ${
+        item.parentThreadTitle
+          ? `<text x="24" y="144" font-family="${FONT}" font-size="15" font-weight="600" fill="#94A3B8">↳ ${escXml(truncate(item.parentThreadTitle, 32))}</text>`
+          : ""
+      }
+
+      <rect x="24" y="156" width="${Math.min(180, Math.max(76, item.projectName.length * 11 + 26))}" height="26" rx="7" fill="#0F172A" stroke="#334155" stroke-width="1.2"/>
+      <text x="36" y="174" font-family="${FONT}" font-size="14" font-weight="700" fill="#CBD5E1">${escXml(truncate(item.projectName, 14))}</text>
+
+      <!-- Divider -->
+      <line x1="428" y1="22" x2="428" y2="178" stroke="${accent}" stroke-opacity="0.3" stroke-width="2"/>
+
+      <!-- Right panoramic command box (x=448..1574) -->
+      <rect x="448" y="22" width="1126" height="124" rx="12" fill="#070A10" stroke="${accent}" stroke-opacity="${danger ? "0.75" : "0.4"}" stroke-width="2"/>
+      ${codeLinesSvg}
+      ${
+        hasMore
+          ? `<rect x="1484" y="114" width="76" height="24" rx="6" fill="#1E293B"/>
+             <text x="1522" y="131" text-anchor="middle" font-family="${MONO}" font-size="13" font-weight="700" fill="${accent}">↕ ${start + 1}-${Math.min(allLines.length, start + visibleCount)}/${allLines.length}</text>`
+          : ""
+      }
+
+      <!-- Bottom context / legend strip -->
+      <text x="452" y="176" font-family="${FONT}" font-size="15" font-weight="600" fill="${danger ? "#FDA4AF" : "#CBD5E1"}">${escXml(reasonText)}</text>
+      <text x="1572" y="176" text-anchor="end" font-family="${FONT}" font-size="13" font-weight="700" fill="${accent}">${total > 1 ? "TURN DIAL 1: NEXT REQ · " : ""}${hasMore ? "DIAL 2: SCROLL · " : ""}PRESS CONFIRM ABOVE</text>
+    `
+  };
+}
+
+export function renderQuestionPanoramicFrame(
+  item: PendingQuestionItem | null,
+  questionIndex: number,
+  optionPage: number,
+  selectedLabels: string[],
+  queueIndex: number,
+  queueTotal: number
+): PanoramicFrame {
+  if (!item) {
+    return {
+      accent: "#10B981",
+      bgTop: "#0B241D",
+      bgBottom: "#070E0D",
+      inner: `<text x="800" y="108" text-anchor="middle" font-family="${FONT}" font-size="30" font-weight="800" fill="#34D399">NO PENDING QUESTIONS</text>`
+    };
+  }
+
+  const question = item.questions[questionIndex];
+  const actorTitle = item.subagentTitle || item.threadTitle;
+  const qBadge =
+    item.questions.length > 1
+      ? `Q${questionIndex + 1}/${item.questions.length}`
+      : queueTotal > 1
+        ? `${queueIndex + 1}/${queueTotal}`
+        : "QUESTION";
+  const questionText = question?.question || (item.detailsLoaded ? "Open in T3 Code to answer" : "Loading question…");
+  const options = question?.options ?? [];
+  const pageOptions = options.slice(optionPage * 4, optionPage * 4 + 4);
+
+  const cardsSvg = [0, 1, 2, 3]
+    .map((slot) => {
+      const opt = pageOptions[slot];
+      const x = 14 + slot * 400;
+      const w = 372;
+      if (!opt) {
+        return `<rect x="${x}" y="94" width="${w}" height="88" rx="12" fill="#0B0E17" stroke="#1E293B" stroke-width="1.5"/>`;
+      }
+      const selected = selectedLabels.includes(opt.label);
+      const border = selected ? "#34D399" : "#A855F7";
+      const fill = selected ? "#0A2B22" : "#160D29";
+      const num = optionPage * 4 + slot + 1;
+      return `
+        <rect x="${x}" y="94" width="${w}" height="88" rx="12" fill="${fill}" stroke="${border}" stroke-opacity="${selected ? "0.95" : "0.55"}" stroke-width="${selected ? "2.5" : "1.8"}"/>
+        <rect x="${x + 14}" y="108" width="28" height="28" rx="7" fill="${selected ? "#10B981" : "#7E22CE"}"/>
+        <text x="${x + 28}" y="128" text-anchor="middle" font-family="${MONO}" font-size="16" font-weight="800" fill="#FFFFFF">${selected ? "✓" : num}</text>
+        <text x="${x + 52}" y="129" font-family="${FONT}" font-size="20" font-weight="800" fill="#FFFFFF">${escXml(truncate(opt.label, 24))}</text>
+        <text x="${x + 16}" y="164" font-family="${FONT}" font-size="15" font-weight="600" fill="#CBD5E1">${escXml(truncate(opt.description || "Tap strip or key above to choose", 39))}</text>
+      `;
+    })
+    .join("");
+
+  return {
+    accent: "#C084FC",
+    bgTop: "#271040",
+    bgBottom: "#0E0718",
+    inner: `
+      <circle cx="30" cy="36" r="8" fill="#C084FC"/>
+      <text x="48" y="43" font-family="${FONT}" font-size="17" font-weight="800" fill="#E9D5FF">${escXml(qBadge)}</text>
+      <rect x="${qBadge.length > 5 ? 160 : 120}" y="19" width="${Math.min(280, Math.max(120, actorTitle.length * 11 + 28))}" height="28" rx="8" fill="#0F172A" stroke="#C084FC" stroke-opacity="0.45"/>
+      <text x="${(qBadge.length > 5 ? 160 : 120) + 14}" y="38" font-family="${FONT}" font-size="15" font-weight="700" fill="#E2E8F0">${escXml(truncate(actorTitle, 22))}</text>
+      ${
+        question?.multiSelect
+          ? `<rect x="1430" y="19" width="146" height="28" rx="8" fill="#064E3B" stroke="#34D399"/>
+             <text x="1503" y="38" text-anchor="middle" font-family="${FONT}" font-size="13" font-weight="800" fill="#6EE7B7">MULTI-SELECT</text>`
+          : `<text x="1574" y="39" text-anchor="end" font-family="${FONT}" font-size="14" font-weight="700" fill="#D8B4FE">TAP OPTION ON STRIP OR KEY ABOVE</text>`
+      }
+
+      <text x="24" y="79" font-family="${FONT}" font-size="24" font-weight="800" fill="#FFFFFF">${escXml(truncate(questionText, 96))}</text>
+
+      ${cardsSvg}
+    `
+  };
+}
+
+export function renderSnoozePanoramicFrame(
+  thread: ThreadShell | null,
+  projectName: string,
+  defaultShortLabel = "1H",
+  secondaryCount = 4,
+  customMinutes: number | null = null
+): PanoramicFrame {
+  const title = thread?.title || "No focused thread";
+  const snoozed = Boolean(thread && isThreadSnoozed(thread));
+  const eta = snoozed && thread?.snoozedUntil ? formatResetCountdown(thread.snoozedUntil) : "";
+
+  const customLabel =
+    customMinutes !== null
+      ? customMinutes < 60
+        ? `${customMinutes} MIN`
+        : customMinutes % 60 === 0
+          ? `${customMinutes / 60} ${customMinutes === 60 ? "HOUR" : "HOURS"}`
+          : `${Math.floor(customMinutes / 60)}H ${customMinutes % 60}M`
+      : null;
+
+  return {
+    accent: customLabel ? "#38BDF8" : "#818CF8",
+    bgTop: customLabel ? "#0B243E" : "#1A1D42",
+    bgBottom: "#090B1A",
+    inner: `
+      <circle cx="32" cy="40" r="9" fill="${customLabel ? "#38BDF8" : "#818CF8"}"/>
+      <text x="52" y="48" font-family="${FONT}" font-size="21" font-weight="800" fill="${customLabel ? "#7DD3FC" : "#A5B4FC"}" letter-spacing="0.8">${customLabel ? `CUSTOM SNOOZE · ${customLabel}` : `SNOOZE PRESETS (${secondaryCount} MORE)`}</text>
+      <text x="1574" y="46" text-anchor="end" font-family="${FONT}" font-size="16" font-weight="700" fill="#94A3B8">${customLabel ? "PRESS DIAL 1 TO APPLY CUSTOM TIME" : `SHORT TAP = ${escXml(defaultShortLabel)} · TURN DIAL 1: CUSTOM`}</text>
+
+      <text x="28" y="114" font-family="${FONT}" font-size="30" font-weight="800" fill="#FFFFFF">${escXml(truncate(title, 50))}</text>
+      <rect x="28" y="138" width="${Math.min(220, Math.max(90, projectName.length * 12 + 28))}" height="30" rx="8" fill="#0F172A" stroke="#475569"/>
+      <text x="42" y="159" font-family="${FONT}" font-size="16" font-weight="700" fill="#CBD5E1">${escXml(truncate(projectName, 16))}</text>
+
+      ${
+        customLabel
+          ? `<rect x="1220" y="124" width="354" height="46" rx="11" fill="#0B3B59" stroke="#38BDF8" stroke-width="2"/>
+             <text x="1397" y="154" text-anchor="middle" font-family="${FONT}" font-size="19" font-weight="800" fill="#FFFFFF">PRESS DIAL 1 · SNOOZE ${escXml(customLabel)}</text>`
+          : snoozed
+            ? `<rect x="1260" y="132" width="314" height="38" rx="10" fill="#362105" stroke="#F59E0B" stroke-width="1.8"/>
+               <text x="1417" y="157" text-anchor="middle" font-family="${FONT}" font-size="17" font-weight="800" fill="#FCD34D">CURRENTLY SNOOZED · ${escXml(eta.toUpperCase())}</text>`
+            : `<text x="1574" y="160" text-anchor="end" font-family="${FONT}" font-size="16" font-weight="700" fill="#818CF8">TAP KEY ABOVE · OR TURN DIAL 1 FOR CUSTOM DURATION</text>`
+      }
+    `
+  };
+}
+
+export function renderNewChatBuilderPanoramicFrame(opts: {
+  projectName: string;
+  projectIdx: number;
+  projectTotal: number;
+  modelName: string;
+  providerLabel: string;
+  providerColor: string;
+  modelScope: ModelCatalogScope;
+  workspaceMode: "local" | "worktree" | "scratch";
+  interactionMode: "default" | "plan";
+}): PanoramicFrame {
+  const wsColor =
+    opts.workspaceMode === "worktree"
+      ? "#10B981"
+      : opts.workspaceMode === "scratch"
+        ? "#F59E0B"
+        : "#38BDF8";
+  const wsLabel = opts.workspaceMode.toUpperCase();
+  const isPlan = opts.interactionMode === "plan";
+
+  return {
+    accent: "#38BDF8",
+    bgTop: "#0B1E34",
+    bgBottom: "#070C15",
+    inner: `
+      <!-- Col 0 (x=0..400): DIAL 1 PROJECT -->
+      <text x="24" y="38" font-family="${FONT}" font-size="15" font-weight="800" fill="#7DD3FC" letter-spacing="0.8">1 · PROJECT</text>
+      <text x="376" y="38" text-anchor="end" font-family="${MONO}" font-size="16" font-weight="800" fill="#94A3B8">${opts.projectTotal > 0 ? `${opts.projectIdx + 1}/${opts.projectTotal}` : "0/0"}</text>
+      <text x="24" y="106" font-family="${FONT}" font-size="30" font-weight="800" fill="#FFFFFF">${escXml(truncate(opts.projectName, 17))}</text>
+      <text x="24" y="172" font-family="${FONT}" font-size="14" font-weight="700" fill="#64748B">TURN DIAL 1: PICK REPO</text>
+      <line x1="400" y1="22" x2="400" y2="178" stroke="#38BDF8" stroke-opacity="0.28" stroke-width="2"/>
+
+      <!-- Col 1 (x=400..800): DIAL 2 MODEL -->
+      <text x="424" y="38" font-family="${FONT}" font-size="15" font-weight="800" fill="${opts.providerColor}" letter-spacing="0.8">2 · ${escXml(truncate(opts.providerLabel.toUpperCase(), 12))}</text>
+      <rect x="688" y="18" width="90" height="26" rx="7" fill="#0F172A" stroke="${opts.modelScope === "favorites" ? "#F59E0B" : "#475569"}" stroke-width="1.5"/>
+      <text x="733" y="36" text-anchor="middle" font-family="${FONT}" font-size="12" font-weight="800" fill="${opts.modelScope === "favorites" ? "#FCD34D" : "#CBD5E1"}">${opts.modelScope === "favorites" ? "★ FAVS" : "ALL"}</text>
+      <text x="424" y="106" font-family="${FONT}" font-size="28" font-weight="800" fill="#FFFFFF">${escXml(truncate(opts.modelName, 18))}</text>
+      <text x="424" y="172" font-family="${FONT}" font-size="14" font-weight="700" fill="#64748B">TURN: MODEL · TAP: FAVS/ALL</text>
+      <line x1="800" y1="22" x2="800" y2="178" stroke="#38BDF8" stroke-opacity="0.28" stroke-width="2"/>
+
+      <!-- Col 2 (x=800..1200): DIAL 3 WORKSPACE / MODE -->
+      <text x="824" y="38" font-family="${FONT}" font-size="15" font-weight="800" fill="${wsColor}" letter-spacing="0.8">3 · WORKSPACE</text>
+      <rect x="1064" y="18" width="114" height="26" rx="7" fill="${isPlan ? "#581C87" : "#1E293B"}" stroke="${isPlan ? "#C084FC" : "#475569"}" stroke-width="1.5"/>
+      <text x="1121" y="36" text-anchor="middle" font-family="${FONT}" font-size="12" font-weight="800" fill="${isPlan ? "#F3E8FF" : "#CBD5E1"}">${isPlan ? "✦ PLAN" : "CODE"}</text>
+      <text x="824" y="106" font-family="${FONT}" font-size="30" font-weight="800" fill="${wsColor}">${wsLabel}</text>
+      <text x="824" y="172" font-family="${FONT}" font-size="14" font-weight="700" fill="#64748B">TURN: WS · TAP: CODE/PLAN</text>
+      <line x1="1200" y1="22" x2="1200" y2="178" stroke="#38BDF8" stroke-opacity="0.28" stroke-width="2"/>
+
+      <!-- Col 3 (x=1200..1600): DIAL 4 LAUNCH -->
+      <rect x="1222" y="26" width="354" height="148" rx="14" fill="#0A2E22" stroke="#10B981" stroke-width="2.5"/>
+      <text x="1399" y="76" text-anchor="middle" font-family="${FONT}" font-size="16" font-weight="800" fill="#6EE7B7" letter-spacing="1.0">4 · READY TO CREATE</text>
+      <text x="1399" y="118" text-anchor="middle" font-family="${FONT}" font-size="30" font-weight="800" fill="#FFFFFF">▶ LAUNCH CHAT</text>
+      <text x="1399" y="152" text-anchor="middle" font-family="${FONT}" font-size="14" font-weight="700" fill="#34D399">PRESS / TAP DIAL 4</text>
+    `
+  };
+}
+
+export function renderNewChatProjectPanoramicFrame(
+  page: number,
+  totalPages: number,
+  projectCount: number
+): PanoramicFrame {
+  return {
+    accent: "#38BDF8",
+    bgTop: "#0B243E",
+    bgBottom: "#070E18",
+    inner: `
+      <circle cx="32" cy="40" r="9" fill="#38BDF8"/>
+      <text x="52" y="48" font-family="${FONT}" font-size="21" font-weight="800" fill="#7DD3FC" letter-spacing="0.8">NEW CHAT · PICK PROJECT</text>
+      <text x="1574" y="46" text-anchor="end" font-family="${MONO}" font-size="18" font-weight="800" fill="#CBD5E1">${projectCount} PROJECTS · PAGE ${page + 1}/${Math.max(1, totalPages)}</text>
+
+      <text x="28" y="114" font-family="${FONT}" font-size="28" font-weight="800" fill="#FFFFFF">Tap a project to launch with its default model</text>
+      <text x="28" y="158" font-family="${FONT}" font-size="19" font-weight="700" fill="#38BDF8">Hold any project key to pick a specific model first</text>
+      <text x="1574" y="158" text-anchor="end" font-family="${FONT}" font-size="16" font-weight="700" fill="#94A3B8">${totalPages > 1 ? "TURN DIAL 1: MORE PROJECTS · " : ""}PRESS BACK TO CANCEL</text>
+    `
+  };
+}
+
+export function renderNewChatEnvPanoramicFrame(
+  projectName: string,
+  page: number,
+  totalPages: number,
+  linkedCount: number
+): PanoramicFrame {
+  return {
+    accent: "#38BDF8",
+    bgTop: "#0B243E",
+    bgBottom: "#070E18",
+    inner: `
+      <circle cx="32" cy="40" r="9" fill="#38BDF8"/>
+      <text x="52" y="48" font-family="${FONT}" font-size="21" font-weight="800" fill="#7DD3FC" letter-spacing="0.8">NEW CHAT · PICK ENVIRONMENT</text>
+      <text x="1574" y="46" text-anchor="end" font-family="${MONO}" font-size="18" font-weight="800" fill="#CBD5E1">${linkedCount > 0 ? `${linkedCount} LINKED · ` : ""}PAGE ${page + 1}/${Math.max(1, totalPages)}</text>
+
+      <text x="28" y="114" font-family="${FONT}" font-size="28" font-weight="800" fill="#FFFFFF">Launch in ${escXml(truncate(projectName, 26))} (Local, Worktree, Scratch, or Linked)</text>
+      <text x="28" y="158" font-family="${FONT}" font-size="19" font-weight="700" fill="#38BDF8">Hold any workspace key to pick a specific model first</text>
+      <text x="1574" y="158" text-anchor="end" font-family="${FONT}" font-size="16" font-weight="700" fill="#94A3B8">TAP BACK UNDER YOUR FINGER TO CANCEL</text>
+    `
+  };
+}
+
+export function renderNewChatModelPanoramicFrame(
+  projectName: string,
+  scope: ModelCatalogScope,
+  interactionMode: "default" | "plan",
+  page: number,
+  totalPages: number
+): PanoramicFrame {
+  const isPlan = interactionMode === "plan";
+  const scopeLabel = scope === "favorites" ? "★ FAVORITES" : "ALL MODELS";
+  return {
+    accent: isPlan ? "#C084FC" : "#10B981",
+    bgTop: isPlan ? "#271040" : "#0A2B22",
+    bgBottom: "#070E12",
+    inner: `
+      <circle cx="32" cy="40" r="9" fill="${isPlan ? "#C084FC" : "#10B981"}"/>
+      <text x="52" y="48" font-family="${FONT}" font-size="21" font-weight="800" fill="${isPlan ? "#E9D5FF" : "#6EE7B7"}" letter-spacing="0.8">NEW CHAT · PICK MODEL</text>
+
+      <rect x="420" y="21" width="${Math.min(260, Math.max(110, projectName.length * 13 + 32))}" height="34" rx="9" fill="#0F172A" stroke="#38BDF8" stroke-width="1.5"/>
+      <text x="436" y="44" font-family="${FONT}" font-size="17" font-weight="800" fill="#FFFFFF">${escXml(truncate(projectName, 18))}</text>
+
+      <rect x="1156" y="21" width="160" height="34" rx="9" fill="#1E293B" stroke="${scope === "favorites" ? "#F59E0B" : "#64748B"}" stroke-width="1.5"/>
+      <text x="1236" y="44" text-anchor="middle" font-family="${FONT}" font-size="15" font-weight="800" fill="${scope === "favorites" ? "#FCD34D" : "#CBD5E1"}">${scopeLabel}</text>
+
+      <rect x="1332" y="21" width="144" height="34" rx="9" fill="${isPlan ? "#581C87" : "#1E293B"}" stroke="${isPlan ? "#C084FC" : "#475569"}" stroke-width="1.5"/>
+      <text x="1404" y="44" text-anchor="middle" font-family="${FONT}" font-size="15" font-weight="800" fill="${isPlan ? "#F3E8FF" : "#CBD5E1"}">${isPlan ? "✦ PLAN" : "CODE"}</text>
+
+      <text x="1574" y="45" text-anchor="end" font-family="${MONO}" font-size="18" font-weight="800" fill="#CBD5E1">${page + 1}/${Math.max(1, totalPages)}</text>
+
+      <text x="28" y="118" font-family="${FONT}" font-size="28" font-weight="800" fill="#FFFFFF">Tap any model above to create &amp; open in ${escXml(truncate(projectName, 24))}</text>
+      <text x="28" y="160" font-family="${FONT}" font-size="16" font-weight="700" fill="#94A3B8">TURN DIAL 1: PAGE MODELS · TAP DIAL 2: FAVS/ALL · TAP DIAL 3: CODE/PLAN · BACK: PROJECTS</text>
+    `
+  };
+}
+
+export function renderPromptsPanoramicFrame(
+  thread: ThreadShell | null,
+  projectName: string,
+  suggestion: PromptSuggestion | null,
+  selectedLabel?: string,
+  selectedPromptText?: string
+): PanoramicFrame {
+  const title = thread?.title || "No focused thread";
+  const running = Boolean(thread && isThreadRunning(thread));
+  const modeLabel = running ? "STEER ACTIVE RUN" : "SEND FOLLOW-UP";
+  const hasSuggestion = Boolean(suggestion && thread && suggestion.threadId === thread.id);
+  const headerTag = selectedLabel
+    ? `SELECTED · ${selectedLabel} (PRESS DIAL 1 TO SEND)`
+    : hasSuggestion
+      ? "✨ PREDICTED NEXT PROMPT"
+      : "PROMPT DRAWER";
+  const bodyText =
+    selectedPromptText ??
+    (hasSuggestion
+      ? suggestion!.text
+      : thread?.hasActionableProposedPlan
+        ? "Proposed plan is ready — tap IMPLEMENT above to execute it."
+        : "Pick any quick prompt on the keys above, or turn Dial 1 to preview.");
+
+  return {
+    accent: "#A78BFA",
+    bgTop: "#22143E",
+    bgBottom: "#0A0817",
+    inner: `
+      <circle cx="32" cy="38" r="8" fill="#A78BFA"/>
+      <text x="50" y="45" font-family="${FONT}" font-size="19" font-weight="800" fill="#C4B5FD" letter-spacing="0.6">${modeLabel}</text>
+      <text x="360" y="45" font-family="${FONT}" font-size="18" font-weight="700" fill="#94A3B8">${escXml(truncate(title, 36))} · ${escXml(truncate(projectName, 14))}</text>
+      <text x="1574" y="45" text-anchor="end" font-family="${FONT}" font-size="15" font-weight="700" fill="#22D3EE">TURN DIAL 1: PREVIEW · PRESS: SEND</text>
+
+      <rect x="24" y="64" width="1552" height="106" rx="12" fill="#080B14" stroke="${hasSuggestion || selectedLabel ? "#22D3EE" : "#4C1D95"}" stroke-opacity="0.7" stroke-width="2"/>
+      <text x="44" y="96" font-family="${FONT}" font-size="14" font-weight="800" fill="${hasSuggestion || selectedLabel ? "#22D3EE" : "#A78BFA"}" letter-spacing="0.8">${escXml(truncate(headerTag, 64))}</text>
+      <text x="44" y="138" font-family="${FONT}" font-size="25" font-weight="700" fill="#FFFFFF">${escXml(truncate(bodyText, 88))}</text>
+    `
+  };
+}
+
+export function renderFleetPanoramicFrame(
+  stats: FleetStats,
+  page: number,
+  totalPages: number
+): PanoramicFrame {
+  return {
+    accent: "#38BDF8",
+    bgTop: "#0B223C",
+    bgBottom: "#070D17",
+    inner: `
+      <circle cx="32" cy="40" r="9" fill="#38BDF8"/>
+      <text x="52" y="48" font-family="${FONT}" font-size="21" font-weight="800" fill="#7DD3FC" letter-spacing="0.8">FLEET SWITCHBOARD</text>
+      <text x="1574" y="46" text-anchor="end" font-family="${MONO}" font-size="19" font-weight="800" fill="#CBD5E1">PAGE ${page + 1}/${Math.max(1, totalPages)} · TURN DIAL 1 TO PAGE</text>
+
+      <g transform="translate(28, 86)">
+        <rect width="260" height="72" rx="12" fill="#0F172A" stroke="#38BDF8" stroke-width="2"/>
+        <text x="24" y="47" font-family="${MONO}" font-size="30" font-weight="800" fill="#38BDF8">▶ ${stats.running}</text>
+        <text x="122" y="44" font-family="${FONT}" font-size="17" font-weight="800" fill="#E2E8F0">RUNNING</text>
+
+        <rect x="284" width="260" height="72" rx="12" fill="#2D1A05" stroke="#F59E0B" stroke-width="2"/>
+        <text x="308" y="47" font-family="${MONO}" font-size="30" font-weight="800" fill="#F59E0B">! ${stats.approvals}</text>
+        <text x="406" y="44" font-family="${FONT}" font-size="17" font-weight="800" fill="#FDE68A">APPROVE</text>
+
+        <rect x="568" width="260" height="72" rx="12" fill="#271040" stroke="#C084FC" stroke-width="2"/>
+        <text x="592" y="47" font-family="${MONO}" font-size="30" font-weight="800" fill="#C084FC">? ${stats.questions}</text>
+        <text x="690" y="44" font-family="${FONT}" font-size="17" font-weight="800" fill="#E9D5FF">INPUT</text>
+
+        <rect x="852" width="260" height="72" rx="12" fill="#300D17" stroke="#FB7185" stroke-width="2"/>
+        <text x="876" y="47" font-family="${MONO}" font-size="30" font-weight="800" fill="#FB7185">✕ ${stats.failed}</text>
+        <text x="974" y="44" font-family="${FONT}" font-size="17" font-weight="800" fill="#FFE4E6">FAILED</text>
+
+        <text x="1144" y="34" font-family="${FONT}" font-size="18" font-weight="800" fill="#FFFFFF">TAP ANY TILE ABOVE</text>
+        <text x="1144" y="60" font-family="${FONT}" font-size="15" font-weight="600" fill="#94A3B8">Focuses thread or opens its approval</text>
+      </g>
+    `
+  };
+}
+
+export function renderThreadToolsPanoramicFrame(
+  thread: ThreadShell | null,
+  projectName: string
+): PanoramicFrame {
+  if (!thread) {
+    return {
+      accent: "#60A5FA",
+      bgTop: "#111D33",
+      bgBottom: "#080C15",
+      inner: `<text x="800" y="108" text-anchor="middle" font-family="${FONT}" font-size="28" font-weight="800" fill="#94A3B8">NO THREAD FOCUSED</text>`
+    };
+  }
+  const pr = primaryPullRequest(thread);
+  const snoozed = isThreadSnoozed(thread);
+  const eta = snoozed && thread.snoozedUntil ? formatResetCountdown(thread.snoozedUntil) : "";
+  const modelShort = shortModelLabel(thread.modelSelection?.model ?? "");
+
+  return {
+    accent: "#60A5FA",
+    bgTop: "#111D33",
+    bgBottom: "#080C15",
+    inner: `
+      <circle cx="32" cy="38" r="8" fill="#60A5FA"/>
+      <text x="50" y="45" font-family="${FONT}" font-size="19" font-weight="800" fill="#93C5FD" letter-spacing="0.8">THREAD TOOLS</text>
+      <text x="1574" y="45" text-anchor="end" font-family="${FONT}" font-size="15" font-weight="700" fill="#94A3B8">${escXml(modelShort.toUpperCase())}${thread.branch ? ` · ${escXml(truncate(thread.branch, 32))}` : ""}</text>
+
+      <text x="28" y="110" font-family="${FONT}" font-size="30" font-weight="800" fill="#FFFFFF">${escXml(truncate(thread.title || "Untitled", 56))}</text>
+
+      <rect x="28" y="134" width="${Math.min(220, Math.max(90, projectName.length * 12 + 28))}" height="32" rx="8" fill="#0F172A" stroke="#334155"/>
+      <text x="42" y="156" font-family="${FONT}" font-size="16" font-weight="700" fill="#CBD5E1">${escXml(truncate(projectName, 16))}</text>
+      ${
+        pr
+          ? `<rect x="268" y="134" width="128" height="32" rx="8" fill="#064E3B" stroke="#34D399"/>
+             <text x="332" y="156" text-anchor="middle" font-family="${MONO}" font-size="16" font-weight="800" fill="#6EE7B7">PR #${pr.number}</text>`
+          : ""
+      }
+      ${
+        snoozed
+          ? `<rect x="1310" y="134" width="264" height="32" rx="8" fill="#1A1D42" stroke="#818CF8"/>
+             <text x="1442" y="156" text-anchor="middle" font-family="${FONT}" font-size="15" font-weight="800" fill="#C7D2FE">SNOOZED · ${escXml(eta.toUpperCase())}</text>`
+          : ""
+      }
+    `
+  };
+}
+
+export type OverlayKeyGlyph =
+  | "check"
+  | "checkbox"
+  | "cross"
+  | "back"
+  | "prev"
+  | "next"
+  | "open"
+  | "clock"
+  | "spark"
+  | "send"
+  | "pin"
+  | "stop"
+  | "sync"
+  | "folder"
+  | "branch"
+  | "server"
+  | "model"
+  | "number";
+
+export function renderOverlayActionKey(opts: {
+  topLabel: string;
+  mainLabel: string;
+  subLabel?: string;
+  accent: string;
+  bgTop: string;
+  bgBottom?: string;
+  glyph: OverlayKeyGlyph;
+  glyphText?: string;
+  glow?: boolean;
+  disabled?: boolean;
+}): string {
+  const accent = opts.disabled ? "#334155" : opts.accent;
+  const bgTop = opts.disabled ? "#0F1420" : opts.bgTop;
+  const bgBottom = opts.bgBottom ?? "#080C14";
+  const textMain = opts.disabled ? "#64748B" : "#FFFFFF";
+  const textSub = opts.disabled ? "#475569" : accent;
+
+  let iconSvg = "";
+  switch (opts.glyph) {
+    case "check":
+      iconSvg = `<circle cx="72" cy="63" r="23" fill="${accent}" opacity="0.22" stroke="${accent}" stroke-width="2.5"/>
+        <path d="M61 63l8 8 15-16" fill="none" stroke="${accent}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>`;
+      break;
+    case "checkbox":
+      iconSvg = `<rect x="50" y="42" width="44" height="44" rx="11" fill="${accent}" opacity="0.16" stroke="${accent}" stroke-width="2.5"/>
+        <path d="M61 64l7 7 15-15" fill="none" stroke="${accent}" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>`;
+      break;
+    case "cross":
+      iconSvg = `<circle cx="72" cy="63" r="23" fill="${accent}" opacity="0.22" stroke="${accent}" stroke-width="2.5"/>
+        <path d="M62 53l20 20M82 53L62 73" stroke="${accent}" stroke-width="5" stroke-linecap="round"/>`;
+      break;
+    case "back":
+      iconSvg = `<circle cx="72" cy="63" r="22" fill="${accent}" opacity="0.16" stroke="${accent}" stroke-width="2"/>
+        <path d="M78 53L64 63l14 10" fill="none" stroke="${accent}" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>`;
+      break;
+    case "prev":
+      iconSvg = `<path d="M80 48L58 63l22 15z" fill="${accent}" opacity="0.9"/>`;
+      break;
+    case "next":
+      iconSvg = `<path d="M64 48l22 15-22 15z" fill="${accent}" opacity="0.9"/>`;
+      break;
+    case "open":
+      iconSvg = `<rect x="52" y="45" width="38" height="36" rx="7" fill="none" stroke="${accent}" stroke-width="3.2"/>
+        <path d="M72 63l18-18M78 45h12v12" fill="none" stroke="${accent}" stroke-width="3.8" stroke-linecap="round" stroke-linejoin="round"/>`;
+      break;
+    case "clock":
+      iconSvg = `<circle cx="72" cy="62" r="22" fill="${accent}" opacity="0.16" stroke="${accent}" stroke-width="2.8"/>
+        <path d="M72 50v13l9 6" fill="none" stroke="${accent}" stroke-width="3.8" stroke-linecap="round" stroke-linejoin="round"/>`;
+      break;
+    case "spark":
+      iconSvg = `<path d="M72 39l6 17 17 6-17 6-6 17-6-17-17-6 17-6z" fill="${accent}" opacity="0.95"/>`;
+      break;
+    case "send":
+      iconSvg = `<path d="M48 64l46-18-17 44-8-19-21-7z" fill="${accent}" opacity="0.9"/>`;
+      break;
+    case "pin":
+      iconSvg = `<circle cx="72" cy="62" r="22" fill="${accent}" opacity="0.18" stroke="${accent}" stroke-width="2.5"/>
+        <text x="72" y="71" text-anchor="middle" font-family="${FONT}" font-size="26" font-weight="800" fill="${accent}">★</text>`;
+      break;
+    case "stop":
+      iconSvg = `<rect x="53" y="44" width="38" height="38" rx="8" fill="${accent}" opacity="0.9"/>`;
+      break;
+    case "sync":
+      iconSvg = `<circle cx="72" cy="63" r="20" fill="none" stroke="${accent}" stroke-width="4" stroke-dasharray="88 34"/>`;
+      break;
+    case "folder":
+      iconSvg = `<path d="M46 50a6 6 0 0 1 6-6h13l6 6h21a6 6 0 0 1 6 6v20a6 6 0 0 1-6 6H52a6 6 0 0 1-6-6V50z" fill="${accent}" opacity="0.22" stroke="${accent}" stroke-width="2.8" stroke-linejoin="round"/>`;
+      break;
+    case "branch":
+      iconSvg = `<circle cx="58" cy="48" r="6" fill="none" stroke="${accent}" stroke-width="3"/>
+        <circle cx="58" cy="78" r="6" fill="none" stroke="${accent}" stroke-width="3"/>
+        <circle cx="86" cy="54" r="6" fill="none" stroke="${accent}" stroke-width="3"/>
+        <path d="M58 54v18M86 60c0 12-28 6-28 18" fill="none" stroke="${accent}" stroke-width="3" stroke-linecap="round"/>`;
+      break;
+    case "server":
+      iconSvg = `<rect x="48" y="44" width="48" height="16" rx="5" fill="${accent}" opacity="0.2" stroke="${accent}" stroke-width="2.4"/>
+        <rect x="48" y="65" width="48" height="16" rx="5" fill="${accent}" opacity="0.2" stroke="${accent}" stroke-width="2.4"/>
+        <circle cx="58" cy="52" r="2.5" fill="${accent}"/>
+        <circle cx="58" cy="73" r="2.5" fill="${accent}"/>`;
+      break;
+    case "model":
+      iconSvg = `<rect x="50" y="43" width="44" height="38" rx="9" fill="${accent}" opacity="0.2" stroke="${accent}" stroke-width="2.5"/>
+        <circle cx="72" cy="62" r="8" fill="${accent}"/>`;
+      break;
+    case "number":
+      iconSvg = `<circle cx="72" cy="62" r="23" fill="${accent}" opacity="0.22" stroke="${accent}" stroke-width="2.5"/>
+        <text x="72" y="72" text-anchor="middle" font-family="${MONO}" font-size="26" font-weight="800" fill="#FFFFFF">${escXml(opts.glyphText ?? "1")}</text>`;
+      break;
+  }
+
+  return keyShell(
+    accent,
+    bgTop,
+    bgBottom,
+    `
+    <text x="72" y="28" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="800" fill="${textSub}" letter-spacing="0.7">${escXml(truncate(opts.topLabel, 15))}</text>
+    ${iconSvg}
+    <text x="72" y="109" text-anchor="middle" font-family="${FONT}" font-size="15" font-weight="800" fill="${textMain}">${escXml(truncate(opts.mainLabel, 12))}</text>
+    ${opts.subLabel ? `<text x="72" y="128" text-anchor="middle" font-family="${FONT}" font-size="10" font-weight="600" fill="#94A3B8">${escXml(truncate(opts.subLabel, 16))}</text>` : ""}
+  `,
+    Boolean(opts.glow && !opts.disabled)
   );
 }

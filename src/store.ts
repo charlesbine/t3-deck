@@ -1,20 +1,29 @@
 import type {
+  DeckOverlay,
   FleetStats,
   ModelCatalogEntry,
   ModelCatalogScope,
   ModelFavorite,
   ModelSelection,
+  PeerLinkSummary,
+  PendingApprovalItem,
+  PendingQuestionItem,
   ProjectShell,
+  PromptSuggestion,
+  ProviderInteractionMode,
   ProviderModelPreference,
   ProviderOptionDescriptor,
   ProviderOptionSelection,
   PullRequestLink,
+  ResolvedSnoozePreset,
   RuntimeMode,
   ServerConfigPayload,
   ServerProvider,
   ServerSettingsPayload,
+  SnoozePresetSetting,
   ThreadCategory,
   ThreadFilterMode,
+  ThreadProjectionPayload,
   ThreadShell,
   UsageCard,
   UsageLimitSourceSnapshot,
@@ -46,6 +55,215 @@ export const RUNTIME_MODE_ORDER: readonly RuntimeMode[] = [
   "auto-accept-edits",
   "auto",
   "full-access"
+];
+
+const DANGEROUS_PATTERNS: ReadonlyArray<{ re: RegExp; reason: string }> = [
+  { re: /\brm\s+-[a-z]*[rf][a-z]*\b/i, reason: "RECURSIVE DELETE" },
+  { re: /\bsudo\b/i, reason: "ELEVATED SUDO" },
+  { re: /\bgit\s+push\b[^\n]*(--force|-f\b|--force-with-lease)/i, reason: "FORCE PUSH" },
+  { re: /\bgit\s+reset\s+--hard\b/i, reason: "HARD RESET" },
+  { re: /\bgit\s+clean\s+-[a-z]*f/i, reason: "GIT CLEAN" },
+  { re: /\b(drop\s+(table|database|schema)|truncate\s+table)\b/i, reason: "DESTRUCTIVE SQL" },
+  { re: /\b(migrate\s+reset|db\s+push\s+--force-reset|--force-reset)\b/i, reason: "DB RESET" },
+  { re: /\b(mkfs|dd\s+if=|chmod\s+-R\s+777|killall|pkill\s+-9)\b/i, reason: "SYSTEM ACTION" },
+  { re: /\bcurl\b[^\n]*\|\s*(sh|bash|zsh)\b/i, reason: "PIPE TO SHELL" }
+];
+
+export function classifyApprovalDanger(
+  prompt?: string,
+  fullAccessOverride?: string
+): { dangerous: boolean; reason?: string } {
+  if (fullAccessOverride === "unskippable_safety") {
+    return { dangerous: true, reason: "SAFETY CHECK" };
+  }
+  if (prompt) {
+    for (const rule of DANGEROUS_PATTERNS) {
+      if (rule.re.test(prompt)) {
+        return { dangerous: true, reason: rule.reason };
+      }
+    }
+  }
+  if (fullAccessOverride === "ask_rule") {
+    return { dangerous: true, reason: "ASK RULE" };
+  }
+  return { dangerous: false };
+}
+
+export const DEFAULT_T3_SNOOZE_PRESETS: readonly SnoozePresetSetting[] = [
+  { kind: "after", minutes: 60 },
+  { kind: "after", minutes: 180 },
+  { kind: "at", day: "today", time: "18:00" },
+  { kind: "at", day: "tomorrow", time: "09:00" },
+  { kind: "at", day: "monday", time: "09:00" }
+];
+
+const WEEKDAY_INDEX: Record<string, number> = {
+  sunday: 0,
+  monday: 1,
+  tuesday: 2,
+  wednesday: 3,
+  thursday: 4,
+  friday: 5,
+  saturday: 6
+};
+
+function formatClock12h(date: Date): string {
+  const h = date.getHours();
+  const m = date.getMinutes();
+  const ampm = h >= 12 ? "PM" : "AM";
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${String(m).padStart(2, "0")} ${ampm}`;
+}
+
+export function resolveSnoozePresetSettings(
+  settings: readonly SnoozePresetSetting[] | null | undefined,
+  nowMs = Date.now()
+): ResolvedSnoozePreset[] {
+  const list = settings && settings.length > 0 ? settings : DEFAULT_T3_SNOOZE_PRESETS;
+  const resolved: Array<{ wakeMs: number; preset: ResolvedSnoozePreset }> = [];
+  const seenWake = new Set<number>();
+
+  for (const raw of list.slice(0, 8)) {
+    if (raw.kind === "after") {
+      const mins = Math.max(1, Math.round(raw.minutes));
+      const wakeMs = nowMs + mins * 60_000;
+      const rounded = Math.round(wakeMs / 60_000) * 60_000;
+      if (seenWake.has(rounded)) continue;
+      seenWake.add(rounded);
+
+      let label: string;
+      let shortLabel: string;
+      if (mins < 60) {
+        label = `${mins} MIN`;
+        shortLabel = `${mins}M`;
+      } else if (mins % 1440 === 0) {
+        const d = mins / 1440;
+        label = d === 1 ? "1 DAY" : `${d} DAYS`;
+        shortLabel = `${d}D`;
+      } else if (mins % 60 === 0) {
+        const h = mins / 60;
+        label = h === 1 ? "1 HOUR" : `${h} HOURS`;
+        shortLabel = `${h}H`;
+      } else {
+        const h = Math.floor(mins / 60);
+        const rm = mins % 60;
+        label = `${h}H ${rm}M`;
+        shortLabel = `${h}H${rm}M`;
+      }
+      const wakeDate = new Date(wakeMs);
+      resolved.push({
+        wakeMs,
+        preset: {
+          id: `after:${mins}`,
+          label,
+          shortLabel,
+          sublabel: formatClock12h(wakeDate),
+          snoozedUntilIso: wakeDate.toISOString()
+        }
+      });
+      continue;
+    }
+
+    // kind === "at"
+    const [hhRaw, mmRaw] = raw.time.split(":");
+    const hh = Number(hhRaw);
+    const mm = Number(mmRaw);
+    if (!Number.isFinite(hh) || !Number.isFinite(mm)) continue;
+
+    const target = new Date(nowMs);
+    target.setSeconds(0, 0);
+    target.setHours(hh, mm, 0, 0);
+
+    const dayKey = raw.day.toLowerCase();
+    let label = dayKey.toUpperCase();
+    let shortLabel = dayKey.slice(0, 3).toUpperCase();
+
+    if (dayKey === "today") {
+      if (target.getTime() <= nowMs + 60_000) {
+        target.setDate(target.getDate() + 1);
+      }
+      label = hh >= 17 ? "TONIGHT" : "TODAY";
+      shortLabel = label;
+    } else if (dayKey === "tomorrow") {
+      target.setDate(target.getDate() + 1);
+      label = "TOMORROW";
+      shortLabel = "TMRW";
+    } else if (dayKey in WEEKDAY_INDEX) {
+      const wantedDow = WEEKDAY_INDEX[dayKey]!;
+      const curDow = target.getDay();
+      let delta = (wantedDow - curDow + 7) % 7;
+      if (delta === 0) delta = 7; // T3 Code rule: weekdays mean the next one after today
+      target.setDate(target.getDate() + delta);
+      label = dayKey.toUpperCase();
+      shortLabel = dayKey.slice(0, 3).toUpperCase();
+    } else {
+      continue;
+    }
+
+    const wakeMs = target.getTime();
+    const rounded = Math.round(wakeMs / 60_000) * 60_000;
+    if (seenWake.has(rounded)) continue;
+    seenWake.add(rounded);
+
+    resolved.push({
+      wakeMs,
+      preset: {
+        id: `at:${dayKey}:${raw.time}`,
+        label,
+        shortLabel,
+        sublabel: formatClock12h(target),
+        snoozedUntilIso: target.toISOString()
+      }
+    });
+  }
+
+  return resolved.sort((a, b) => a.wakeMs - b.wakeMs).map((r) => r.preset);
+}
+
+export interface QuickPromptPreset {
+  id: string;
+  label: string;
+  sublabel: string;
+  prompt: string;
+  accent: string;
+}
+
+export const QUICK_PROMPT_PRESETS: readonly QuickPromptPreset[] = [
+  {
+    id: "continue",
+    label: "CONTINUE",
+    sublabel: "KEEP GOING",
+    prompt: "Continue",
+    accent: "#22D3EE"
+  },
+  {
+    id: "tests",
+    label: "RUN TESTS",
+    sublabel: "VERIFY & FIX",
+    prompt: "Run the test suite and fix any failures.",
+    accent: "#10B981"
+  },
+  {
+    id: "commit",
+    label: "COMMIT & PR",
+    sublabel: "SHIP CHANGES",
+    prompt: "Commit our changes cleanly and open or update the pull request.",
+    accent: "#818CF8"
+  },
+  {
+    id: "fix-ci",
+    label: "FIX CI",
+    sublabel: "CHECK LOGS",
+    prompt: "Check the failing CI logs on this branch and fix the issues.",
+    accent: "#F59E0B"
+  },
+  {
+    id: "review",
+    label: "REVIEW DIFF",
+    sublabel: "SELF-AUDIT",
+    prompt: "Review the current diff for bugs, edge cases, and missing tests.",
+    accent: "#C084FC"
+  }
 ];
 
 export function isApprovalRequest(thread: ThreadShell): boolean {
@@ -288,9 +506,12 @@ export class T3Store {
 
   private projects = new Map<string, ProjectShell>();
   private threads = new Map<string, ThreadShell>();
+  private projections = new Map<string, { requestKey: string; payload: ThreadProjectionPayload }>();
   private providers: ServerProvider[] = [];
   private favorites: ModelFavorite[] = [];
   private providerModelPreferences: Record<string, ProviderModelPreference> = {};
+  private snoozePresetSettings: SnoozePresetSetting[] | null = null;
+  private peerLinks: PeerLinkSummary[] = [];
   private usageLimitSources: UsageLimitSourceSnapshot[] = [];
 
   filterMode: ThreadFilterMode = "active";
@@ -299,6 +520,8 @@ export class T3Store {
   private lastAppOpenedThreadId: string | null = null;
   private lastManualScrubAt = 0;
   usageIndex = 0;
+  promptSuggestion: PromptSuggestion | null = null;
+  overlay: DeckOverlay = { kind: "none" };
 
   /** While user is spinning the Model dial, holds the preview index before press-to-apply. */
   pendingModelIndex: number | null = null;
@@ -349,6 +572,11 @@ export class T3Store {
     } else if (settings.providerModelPreferences === null) {
       this.providerModelPreferences = {};
     }
+    if (Array.isArray(settings.snoozePresets)) {
+      this.snoozePresetSettings = settings.snoozePresets;
+    } else if (settings.snoozePresets === null) {
+      this.snoozePresetSettings = null;
+    }
     if (shouldEmit) this.emit();
   }
 
@@ -360,6 +588,15 @@ export class T3Store {
   applyUsageLimitSourcesUpdated(sources: UsageLimitSourceSnapshot[]): void {
     this.usageLimitSources = sources;
     this.emit();
+  }
+
+  applyPeerLinksUpdated(links: PeerLinkSummary[]): void {
+    this.peerLinks = links;
+    this.emit();
+  }
+
+  getPeerLinks(): PeerLinkSummary[] {
+    return this.peerLinks;
   }
 
   applyShellSnapshot(
@@ -381,6 +618,7 @@ export class T3Store {
     }
 
     this.threads.clear();
+    this.projections.clear();
     for (const thread of threads) {
       if (!thread.deletedAt && !thread.archivedAt) {
         this.threads.set(thread.id, thread);
@@ -416,8 +654,14 @@ export class T3Store {
     const prev = this.threads.get(thread.id);
     if (location === "archive" || thread.deletedAt || thread.archivedAt) {
       this.threads.delete(thread.id);
+      this.projections.delete(thread.id);
     } else {
       this.threads.set(thread.id, thread);
+      const prevReqId = prev?.pendingRuntimeRequest?.id ?? null;
+      const nextReqId = thread.pendingRuntimeRequest?.id ?? null;
+      if (prevReqId !== nextReqId) {
+        this.projections.delete(thread.id);
+      }
 
       // Auto-follow only when the user actually switches/opens a thread in T3 Code
       // (`opens.openedAt` advances), NOT on background `lastVisitedAt` read-watermark ticks
@@ -444,6 +688,7 @@ export class T3Store {
       }
     }
     this.ensureValidFocus();
+    this.reconcileOverlayAfterUpdate();
     this.emit();
   }
 
@@ -463,7 +708,9 @@ export class T3Store {
 
   applyThreadRemoved(threadId: string): void {
     this.threads.delete(threadId);
+    this.projections.delete(threadId);
     this.ensureValidFocus();
+    this.reconcileOverlayAfterUpdate();
     this.emit();
   }
 
@@ -495,6 +742,74 @@ export class T3Store {
 
   getProjectName(projectId: string): string {
     return this.projects.get(projectId)?.title ?? "T3";
+  }
+
+  getProjectById(projectId: string): ProjectShell | null {
+    return this.projects.get(projectId) ?? null;
+  }
+
+  /** Projects ordered for the New Chat picker: pinned first, then most recently active thread, then title. */
+  getLaunchProjects(): ProjectShell[] {
+    const latestActivityByProject = new Map<string, number>();
+    for (const t of this.getAllThreads()) {
+      const ts = Math.max(threadVisitTimestamp(t), Date.parse(t.updatedAt) || 0);
+      const prev = latestActivityByProject.get(t.projectId) ?? 0;
+      if (ts > prev) latestActivityByProject.set(t.projectId, ts);
+    }
+
+    return [...this.projects.values()]
+      .filter((p) => !p.deletedAt && !p.archivedAt)
+      .sort((a, b) => {
+        const pinA = a.pinnedAt ? 0 : 1;
+        const pinB = b.pinnedAt ? 0 : 1;
+        if (pinA !== pinB) return pinA - pinB;
+        const actA = latestActivityByProject.get(a.id) ?? 0;
+        const actB = latestActivityByProject.get(b.id) ?? 0;
+        if (actA !== actB) return actB - actA;
+        return a.title.localeCompare(b.title);
+      });
+  }
+
+  getDefaultModelSelectionForProject(project: ProjectShell): ModelSelection | null {
+    if (project.defaultModelSelection?.model) {
+      return project.defaultModelSelection;
+    }
+    const focused = this.getFocusedThread();
+    if (focused?.modelSelection?.model) {
+      return focused.modelSelection;
+    }
+    const firstFav = this.getFavoriteModelCatalog()[0] ?? this.getFullModelCatalog()[0];
+    if (firstFav) {
+      return {
+        instanceId: firstFav.instanceId,
+        provider: firstFav.driver,
+        model: firstFav.slug
+      };
+    }
+    return null;
+  }
+
+  getResolvedSnoozePresets(nowMs = Date.now()): ResolvedSnoozePreset[] {
+    return resolveSnoozePresetSettings(this.snoozePresetSettings, nowMs);
+  }
+
+  /** Preset #0 (soonest in T3 Code settings) — triggered by short tap on Snooze key. */
+  getDefaultSnoozePreset(nowMs = Date.now()): ResolvedSnoozePreset {
+    const all = this.getResolvedSnoozePresets(nowMs);
+    return (
+      all[0] ?? {
+        id: "after:60",
+        label: "1 HOUR",
+        shortLabel: "1H",
+        sublabel: formatClock12h(new Date(nowMs + 3_600_000)),
+        snoozedUntilIso: new Date(nowMs + 3_600_000).toISOString()
+      }
+    );
+  }
+
+  /** Presets #1..#7 (up to 7 remaining T3 Code presets) — placed in Hold Snooze overlay alongside BACK. */
+  getSecondarySnoozePresets(nowMs = Date.now()): ResolvedSnoozePreset[] {
+    return this.getResolvedSnoozePresets(nowMs).slice(1, 8);
   }
 
   getAllThreads(): ThreadShell[] {
@@ -843,9 +1158,20 @@ export class T3Store {
       driver: string,
       accentColor: string,
       windows: UsageWindow[],
-      checkedAt?: string
+      checkedAt?: string,
+      unavailable?: { reason: string; message?: string }
     ): UsageCard | null => {
-      if (windows.length === 0) return null;
+      if (windows.length === 0) {
+        if (!unavailable || unavailable.reason === "unsupported") return null;
+        return {
+          id,
+          label,
+          driver,
+          accentColor,
+          checkedAt,
+          unavailable
+        };
+      }
       const pickHighest = (kind: UsageWindow["kind"]): UsageWindow | undefined => {
         const matches = windows.filter((w) => w.kind === kind);
         if (matches.length === 0) return undefined;
@@ -870,7 +1196,8 @@ export class T3Store {
 
     for (const provider of this.providers) {
       const windows = provider.usageLimits?.windows ?? [];
-      if (windows.length === 0) continue;
+      const unavailable = provider.usageLimits?.unavailable;
+      if (windows.length === 0 && (!unavailable || unavailable.reason === "unsupported")) continue;
       const brand = providerBrandInfo(provider);
       const card = makeCard(
         provider.instanceId,
@@ -878,7 +1205,8 @@ export class T3Store {
         provider.driver,
         brand.color,
         windows,
-        provider.usageLimits?.checkedAt
+        provider.usageLimits?.checkedAt,
+        unavailable
       );
       if (card) {
         seen.add(card.id);
@@ -891,7 +1219,8 @@ export class T3Store {
         const key = `${src.id}:${acct.id}`;
         if (seen.has(key)) continue;
         const windows = acct.usageLimits?.windows ?? [];
-        if (windows.length === 0) continue;
+        const unavailable = acct.usageLimits?.unavailable;
+        if (windows.length === 0 && (!unavailable || unavailable.reason === "unsupported")) continue;
         const brand = providerBrandInfo({
           instanceId: acct.id,
           driver: acct.driver,
@@ -903,7 +1232,8 @@ export class T3Store {
           acct.driver,
           brand.color,
           windows,
-          acct.usageLimits?.checkedAt
+          acct.usageLimits?.checkedAt,
+          unavailable
         );
         if (card) {
           seen.add(key);
@@ -928,5 +1258,802 @@ export class T3Store {
     if (cards.length === 0) return { card: null, index: -1, total: 0 };
     const idx = ((this.usageIndex % cards.length) + cards.length) % cards.length;
     return { card: cards[idx] ?? null, index: idx, total: cards.length };
+  }
+
+  // ---- On-demand Thread Projections, Prompt Suggestions & Approval/Question Queues ----
+
+  setPromptSuggestion(suggestion: PromptSuggestion | null): void {
+    const prev = this.promptSuggestion;
+    if (
+      prev?.threadId === suggestion?.threadId &&
+      prev?.runId === suggestion?.runId &&
+      prev?.text === suggestion?.text
+    ) {
+      return;
+    }
+    this.promptSuggestion = suggestion;
+    this.emit();
+  }
+
+  applyThreadProjection(threadId: string, payload: ThreadProjectionPayload): void {
+    const thread = this.threads.get(threadId);
+    const requestKey = thread?.pendingRuntimeRequest?.id ?? "none";
+    this.projections.set(threadId, { requestKey, payload });
+    this.reconcileOverlayAfterUpdate();
+    this.emit();
+  }
+
+  /** Returns thread IDs that have a pending runtime request whose projection has not yet been fetched. */
+  getThreadsNeedingProjectionFetch(): string[] {
+    const ids: string[] = [];
+    for (const thread of this.getAllThreads()) {
+      const req = thread.pendingRuntimeRequest;
+      if (!req) continue;
+      const cached = this.projections.get(thread.id);
+      if (!cached || cached.requestKey !== req.id) {
+        ids.push(thread.id);
+      }
+    }
+    return ids;
+  }
+
+  getThreadById(threadId: string): ThreadShell | null {
+    return this.threads.get(threadId) ?? null;
+  }
+
+  private resolveParentTitle(thread: ThreadShell): string | undefined {
+    const parentId = thread.lineage?.parentThreadId;
+    if (!parentId) return undefined;
+    return this.threads.get(parentId)?.title;
+  }
+
+  /**
+   * Flattened queue of every pending approval across all threads & subagents
+   * (including multiple simultaneous pending requests within one parent thread).
+   */
+  getPendingApprovalQueue(): PendingApprovalItem[] {
+    const items: PendingApprovalItem[] = [];
+    const seen = new Set<string>();
+
+    for (const thread of this.getAllThreads()) {
+      const cached = this.projections.get(thread.id)?.payload;
+      const projectName = this.getProjectName(thread.projectId);
+      const parentTitle = this.resolveParentTitle(thread);
+      const isAppSubagent = Boolean(thread.lineage?.parentThreadId);
+
+      if (cached?.runtimeRequests && cached.runtimeRequests.length > 0) {
+        const subagentByNode = new Map(
+          (cached.subagents ?? []).map((s) => [s.id, s])
+        );
+        for (const req of cached.runtimeRequests) {
+          if (req.status !== "pending") continue;
+          if (!APPROVAL_KINDS.has(req.kind)) continue;
+          const key = `${thread.id}::${req.id}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+
+          const turnItem = [...(cached.turnItems ?? [])]
+            .reverse()
+            .find((it) => it.type === "approval_request" && it.requestId === req.id);
+          const nativeSub = subagentByNode.get(req.nodeId);
+          const subagentTitle =
+            nativeSub?.title || (isAppSubagent ? thread.title : undefined);
+          const danger = classifyApprovalDanger(
+            turnItem?.prompt,
+            turnItem?.fullAccessOverride
+          );
+
+          items.push({
+            threadId: thread.id,
+            requestId: req.id,
+            nodeId: req.nodeId,
+            requestKind: req.kind,
+            createdAt: req.createdAt,
+            threadTitle: thread.title || "Untitled",
+            projectName,
+            subagentTitle,
+            parentThreadTitle: nativeSub
+              ? thread.title
+              : parentTitle,
+            prompt: turnItem?.prompt,
+            reason: turnItem?.reason,
+            appName: turnItem?.appName,
+            fullAccessOverride: turnItem?.fullAccessOverride,
+            options: turnItem?.options,
+            responseCapability:
+              req.responseCapability?.type === "live" ? "live" : "not_resumable",
+            dangerous: danger.dangerous,
+            dangerReason: danger.reason,
+            detailsLoaded: true
+          });
+        }
+        continue;
+      }
+
+      // Fallback before projection loads: use shell summary so UI responds instantaneously
+      if (isApprovalRequest(thread) && thread.pendingRuntimeRequest) {
+        const req = thread.pendingRuntimeRequest;
+        const key = `${thread.id}::${req.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        items.push({
+          threadId: thread.id,
+          requestId: req.id,
+          requestKind: req.kind,
+          createdAt: req.createdAt,
+          threadTitle: thread.title || "Untitled",
+          projectName,
+          subagentTitle: isAppSubagent ? thread.title : undefined,
+          parentThreadTitle: parentTitle,
+          responseCapability: "live",
+          dangerous: false,
+          detailsLoaded: false
+        });
+      }
+    }
+
+    // Oldest waiting request first (FIFO triage), tie-break by id
+    return items.sort((a, b) => {
+      const ta = Date.parse(a.createdAt) || 0;
+      const tb = Date.parse(b.createdAt) || 0;
+      if (ta !== tb) return ta - tb;
+      return a.requestId.localeCompare(b.requestId);
+    });
+  }
+
+  /**
+   * Flattened queue of every pending multiple-choice user_input question across all threads.
+   */
+  getPendingQuestionQueue(): PendingQuestionItem[] {
+    const items: PendingQuestionItem[] = [];
+    const seen = new Set<string>();
+
+    for (const thread of this.getAllThreads()) {
+      const cached = this.projections.get(thread.id)?.payload;
+      const projectName = this.getProjectName(thread.projectId);
+      const parentTitle = this.resolveParentTitle(thread);
+      const isAppSubagent = Boolean(thread.lineage?.parentThreadId);
+
+      if (cached?.runtimeRequests && cached.runtimeRequests.length > 0) {
+        const subagentByNode = new Map(
+          (cached.subagents ?? []).map((s) => [s.id, s])
+        );
+        for (const req of cached.runtimeRequests) {
+          if (req.status !== "pending") continue;
+          if (req.kind !== "user_input") continue;
+          const key = `${thread.id}::${req.id}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+
+          const turnItem = [...(cached.turnItems ?? [])]
+            .reverse()
+            .find((it) => it.type === "user_input_request" && it.requestId === req.id);
+          const nativeSub = subagentByNode.get(req.nodeId);
+
+          items.push({
+            threadId: thread.id,
+            requestId: req.id,
+            createdAt: req.createdAt,
+            threadTitle: thread.title || "Untitled",
+            projectName,
+            subagentTitle: nativeSub?.title || (isAppSubagent ? thread.title : undefined),
+            parentThreadTitle: nativeSub ? thread.title : parentTitle,
+            questions: turnItem?.questions ?? [],
+            dismissible:
+              turnItem?.responseMode === "message" || req.responseCapability?.type === "message",
+            detailsLoaded: Boolean(turnItem?.questions)
+          });
+        }
+        continue;
+      }
+
+      if (isQuestionRequest(thread) && thread.pendingRuntimeRequest) {
+        const req = thread.pendingRuntimeRequest;
+        const key = `${thread.id}::${req.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        items.push({
+          threadId: thread.id,
+          requestId: req.id,
+          createdAt: req.createdAt,
+          threadTitle: thread.title || "Untitled",
+          projectName,
+          subagentTitle: isAppSubagent ? thread.title : undefined,
+          parentThreadTitle: parentTitle,
+          questions: [],
+          dismissible: false,
+          detailsLoaded: false
+        });
+      }
+    }
+
+    return items.sort((a, b) => {
+      const ta = Date.parse(a.createdAt) || 0;
+      const tb = Date.parse(b.createdAt) || 0;
+      if (ta !== tb) return ta - tb;
+      return a.requestId.localeCompare(b.requestId);
+    });
+  }
+
+  // ---- Panoramic Overlay / Submenu State Machine ----
+
+  getActiveOverlayApproval(): {
+    item: PendingApprovalItem | null;
+    index: number;
+    total: number;
+  } {
+    const queue = this.getPendingApprovalQueue();
+    if (queue.length === 0) return { item: null, index: -1, total: 0 };
+    if (this.overlay.kind === "approval" && this.overlay.requestId) {
+      const targetId = this.overlay.requestId;
+      const idx = queue.findIndex((q) => q.requestId === targetId);
+      if (idx >= 0) return { item: queue[idx]!, index: idx, total: queue.length };
+    }
+    return { item: queue[0]!, index: 0, total: queue.length };
+  }
+
+  getActiveOverlayQuestion(): {
+    item: PendingQuestionItem | null;
+    index: number;
+    total: number;
+  } {
+    const queue = this.getPendingQuestionQueue();
+    if (queue.length === 0) return { item: null, index: -1, total: 0 };
+    if (this.overlay.kind === "question" && this.overlay.requestId) {
+      const targetId = this.overlay.requestId;
+      const idx = queue.findIndex((q) => q.requestId === targetId);
+      if (idx >= 0) return { item: queue[idx]!, index: idx, total: queue.length };
+    }
+    return { item: queue[0]!, index: 0, total: queue.length };
+  }
+
+  openApprovalOverlay(preferredThreadId?: string, originSlot = 1): boolean {
+    const queue = this.getPendingApprovalQueue();
+    if (queue.length === 0) return false;
+    const focusedId = preferredThreadId ?? this.getFocusedThread()?.id;
+    const match = focusedId ? queue.find((q) => q.threadId === focusedId) : undefined;
+    const target = match ?? queue[0]!;
+    this.overlay = { kind: "approval", requestId: target.requestId, scrollLine: 0, originSlot };
+    this.focusedThreadId = target.threadId;
+    this.emit();
+    return true;
+  }
+
+  openQuestionOverlay(preferredThreadId?: string, originSlot = 1): boolean {
+    const queue = this.getPendingQuestionQueue();
+    if (queue.length === 0) return false;
+    const focusedId = preferredThreadId ?? this.getFocusedThread()?.id;
+    const match = focusedId ? queue.find((q) => q.threadId === focusedId) : undefined;
+    const target = match ?? queue[0]!;
+    this.overlay = {
+      kind: "question",
+      requestId: target.requestId,
+      questionIndex: 0,
+      optionPage: 0,
+      selectedByQuestionId: {},
+      originSlot
+    };
+    this.focusedThreadId = target.threadId;
+    this.emit();
+    return true;
+  }
+
+  openPromptsOverlay(originSlot = 5): void {
+    this.overlay = { kind: "prompts", originSlot, selectedIndex: 0 };
+    this.emit();
+  }
+
+  openSnoozeOverlay(originSlot = 7): void {
+    this.overlay = { kind: "snooze", originSlot, customMinutes: null };
+    this.emit();
+  }
+
+  openNewChatBuilderOverlay(
+    originSlot = 4,
+    keyMode: "project" | "environment" | "model" = "project",
+    interactionMode: ProviderInteractionMode = "default"
+  ): void {
+    const projects = this.getLaunchProjects();
+    const focused = this.getFocusedThread();
+    const projIdx = focused
+      ? Math.max(0, projects.findIndex((p) => p.id === focused.projectId))
+      : 0;
+    const scope = this.getEffectiveModelScope();
+    const catalog =
+      scope === "favorites"
+        ? this.getFavoriteModelCatalog().length > 0
+          ? this.getFavoriteModelCatalog()
+          : this.getFullModelCatalog()
+        : this.getFullModelCatalog();
+    const defaultSel = projects[projIdx]
+      ? this.getDefaultModelSelectionForProject(projects[projIdx]!)
+      : focused?.modelSelection ?? null;
+    const modelIdx = defaultSel?.model
+      ? Math.max(0, catalog.findIndex((m) => m.slug === defaultSel.model))
+      : 0;
+    const wsMode = projects[projIdx]?.defaultThreadEnvMode === "worktree" ? "worktree" : "local";
+
+    this.overlay = {
+      kind: "new-chat-builder",
+      originSlot,
+      projectIndex: projIdx,
+      modelIndex: modelIdx,
+      modelScope: scope,
+      workspaceMode: wsMode,
+      interactionMode,
+      keyMode
+    };
+    this.emit();
+  }
+
+  getNewChatBuilderCatalog(): ModelCatalogEntry[] {
+    if (this.overlay.kind !== "new-chat-builder") return this.getModelCatalog();
+    if (this.overlay.modelScope === "favorites") {
+      const favs = this.getFavoriteModelCatalog();
+      return favs.length > 0 ? favs : this.getFullModelCatalog();
+    }
+    return this.getFullModelCatalog();
+  }
+
+  stepNewChatBuilderDial(col: number, ticks: number): void {
+    if (this.overlay.kind !== "new-chat-builder") return;
+    if (col === 0) {
+      const projects = this.getLaunchProjects();
+      if (projects.length === 0) return;
+      const next = (((this.overlay.projectIndex + ticks) % projects.length) + projects.length) % projects.length;
+      const proj = projects[next]!;
+      const wsMode = proj.defaultThreadEnvMode === "worktree" ? "worktree" : this.overlay.workspaceMode;
+      this.overlay = { ...this.overlay, projectIndex: next, workspaceMode: wsMode };
+      this.emit();
+      return;
+    }
+    if (col === 1) {
+      const catalog = this.getNewChatBuilderCatalog();
+      if (catalog.length === 0) return;
+      const next = (((this.overlay.modelIndex + ticks) % catalog.length) + catalog.length) % catalog.length;
+      this.overlay = { ...this.overlay, modelIndex: next };
+      this.emit();
+      return;
+    }
+    if (col === 2) {
+      const modes: Array<"local" | "worktree" | "scratch"> = ["local", "worktree", "scratch"];
+      const cur = modes.indexOf(this.overlay.workspaceMode);
+      const next = modes[(((cur + ticks) % modes.length) + modes.length) % modes.length] ?? "local";
+      this.overlay = { ...this.overlay, workspaceMode: next };
+      this.emit();
+      return;
+    }
+    if (col === 3) {
+      const nextMode: ProviderInteractionMode =
+        this.overlay.interactionMode === "plan" ? "default" : "plan";
+      this.overlay = { ...this.overlay, interactionMode: nextMode };
+      this.emit();
+    }
+  }
+
+  toggleNewChatBuilderDial(col: number): void {
+    if (this.overlay.kind !== "new-chat-builder") return;
+    if (col === 1) {
+      const nextScope: ModelCatalogScope =
+        this.overlay.modelScope === "favorites" ? "all" : "favorites";
+      this.overlay = { ...this.overlay, modelScope: nextScope, modelIndex: 0 };
+      this.emit();
+      return;
+    }
+    if (col === 2) {
+      const nextMode: ProviderInteractionMode =
+        this.overlay.interactionMode === "plan" ? "default" : "plan";
+      this.overlay = { ...this.overlay, interactionMode: nextMode };
+      this.emit();
+    }
+  }
+
+  setNewChatBuilderProject(projectIndex: number): void {
+    if (this.overlay.kind !== "new-chat-builder") return;
+    this.overlay = { ...this.overlay, projectIndex };
+    this.emit();
+  }
+
+  setNewChatBuilderModel(modelIndex: number): void {
+    if (this.overlay.kind !== "new-chat-builder") return;
+    this.overlay = { ...this.overlay, modelIndex };
+    this.emit();
+  }
+
+  setNewChatBuilderWorkspace(workspaceMode: "local" | "worktree" | "scratch"): void {
+    if (this.overlay.kind !== "new-chat-builder") return;
+    this.overlay = { ...this.overlay, workspaceMode };
+    this.emit();
+  }
+
+  stepSnoozeCustom(ticks: number): void {
+    if (this.overlay.kind !== "snooze") return;
+    const steps = [15, 30, 45, 60, 90, 120, 180, 240, 360, 480, 720, 1440];
+    const cur = this.overlay.customMinutes;
+    let idx = cur === null ? (ticks >= 0 ? 0 : steps.length - 1) : steps.indexOf(cur);
+    if (idx < 0) idx = 0;
+    else if (cur !== null) idx = (((idx + ticks) % steps.length) + steps.length) % steps.length;
+    this.overlay = { ...this.overlay, customMinutes: steps[idx] ?? 60 };
+    this.emit();
+  }
+
+  stepPromptSelection(ticks: number): void {
+    if (this.overlay.kind !== "prompts") return;
+    const total = 7; // 0: AI Next, 1: Implement Plan, 2..6: 5 presets
+    const next = (((this.overlay.selectedIndex + ticks) % total) + total) % total;
+    this.overlay = { ...this.overlay, selectedIndex: next };
+    this.emit();
+  }
+
+  openFleetOverlay(originSlot = 0): void {
+    this.overlay = { kind: "fleet", page: 0, originSlot };
+    this.emit();
+  }
+
+  openThreadToolsOverlay(originSlot = 3): void {
+    this.overlay = { kind: "thread-tools", originSlot };
+    this.emit();
+  }
+
+  openNewChatProjectOverlay(
+    originSlot = 4,
+    interactionMode: ProviderInteractionMode = "default"
+  ): void {
+    this.overlay = { kind: "new-chat-project", page: 0, originSlot, interactionMode };
+    this.emit();
+  }
+
+  openNewChatEnvOverlay(
+    originSlot = 4,
+    interactionMode: ProviderInteractionMode = "default"
+  ): void {
+    this.overlay = { kind: "new-chat-env", page: 0, originSlot, interactionMode };
+    this.emit();
+  }
+
+  openNewChatModelOverlay(
+    projectId: string,
+    opts: {
+      originSlot?: number;
+      parentKind?: "none" | "new-chat-project" | "new-chat-env";
+      parentOriginSlot?: number;
+      workspaceMode?: "local" | "worktree" | "scratch";
+      interactionMode?: ProviderInteractionMode;
+    } = {}
+  ): void {
+    this.overlay = {
+      kind: "new-chat-model",
+      projectId,
+      workspaceMode: opts.workspaceMode ?? "local",
+      page: 0,
+      scope: this.getEffectiveModelScope(),
+      interactionMode: opts.interactionMode ?? "default",
+      originSlot: opts.originSlot ?? 4,
+      parentKind: opts.parentKind ?? "new-chat-project",
+      parentOriginSlot: opts.parentOriginSlot ?? 4
+    };
+    this.emit();
+  }
+
+  toggleNewChatModelScope(): void {
+    if (this.overlay.kind !== "new-chat-model") return;
+    const nextScope: ModelCatalogScope = this.overlay.scope === "favorites" ? "all" : "favorites";
+    this.overlay = { ...this.overlay, scope: nextScope, page: 0 };
+    this.emit();
+  }
+
+  toggleNewChatInteractionMode(): void {
+    if (this.overlay.kind !== "new-chat-model") return;
+    const nextMode = this.overlay.interactionMode === "plan" ? "default" : "plan";
+    this.overlay = { ...this.overlay, interactionMode: nextMode };
+    this.emit();
+  }
+
+  getNewChatModelCatalog(): ModelCatalogEntry[] {
+    if (this.overlay.kind !== "new-chat-model") return this.getModelCatalog();
+    if (this.overlay.scope === "favorites") {
+      const favs = this.getFavoriteModelCatalog();
+      return favs.length > 0 ? favs : this.getFullModelCatalog();
+    }
+    return this.getFullModelCatalog();
+  }
+
+  closeOverlay(): void {
+    if (this.overlay.kind === "none") return;
+    this.overlay = { kind: "none" };
+    this.emit();
+  }
+
+  stepOverlayQueue(ticks: number): void {
+    if (this.overlay.kind === "approval") {
+      const queue = this.getPendingApprovalQueue();
+      if (queue.length === 0) {
+        this.closeOverlay();
+        return;
+      }
+      const { index } = this.getActiveOverlayApproval();
+      const base = index >= 0 ? index : 0;
+      const nextIdx = (((base + ticks) % queue.length) + queue.length) % queue.length;
+      const next = queue[nextIdx]!;
+      this.overlay = { ...this.overlay, requestId: next.requestId, scrollLine: 0 };
+      this.focusedThreadId = next.threadId;
+      this.emit();
+      return;
+    }
+
+    if (this.overlay.kind === "question") {
+      const queue = this.getPendingQuestionQueue();
+      if (queue.length === 0) {
+        this.closeOverlay();
+        return;
+      }
+      const { index } = this.getActiveOverlayQuestion();
+      const base = index >= 0 ? index : 0;
+      const nextIdx = (((base + ticks) % queue.length) + queue.length) % queue.length;
+      const next = queue[nextIdx]!;
+      this.overlay = {
+        ...this.overlay,
+        requestId: next.requestId,
+        questionIndex: 0,
+        optionPage: 0,
+        selectedByQuestionId: {}
+      };
+      this.focusedThreadId = next.threadId;
+      this.emit();
+      return;
+    }
+
+    if (this.overlay.kind === "fleet") {
+      const list = this.getFilteredThreads("active");
+      const totalPages = Math.max(1, Math.ceil(list.length / 7));
+      const nextPage = (((this.overlay.page + ticks) % totalPages) + totalPages) % totalPages;
+      this.overlay = { ...this.overlay, page: nextPage };
+      this.emit();
+      return;
+    }
+
+    if (this.overlay.kind === "new-chat-project") {
+      const list = this.getLaunchProjects();
+      const totalPages = Math.max(1, Math.ceil(list.length / 7));
+      const nextPage = (((this.overlay.page + ticks) % totalPages) + totalPages) % totalPages;
+      this.overlay = { ...this.overlay, page: nextPage };
+      this.emit();
+      return;
+    }
+
+    if (this.overlay.kind === "new-chat-env") {
+      const totalItems = 4 + this.peerLinks.length;
+      const totalPages = Math.max(1, Math.ceil(totalItems / 7));
+      const nextPage = (((this.overlay.page + ticks) % totalPages) + totalPages) % totalPages;
+      this.overlay = { ...this.overlay, page: nextPage };
+      this.emit();
+      return;
+    }
+
+    if (this.overlay.kind === "new-chat-model") {
+      const list = this.getNewChatModelCatalog();
+      const totalPages = Math.max(1, Math.ceil(list.length / 7));
+      const nextPage = (((this.overlay.page + ticks) % totalPages) + totalPages) % totalPages;
+      this.overlay = { ...this.overlay, page: nextPage };
+      this.emit();
+    }
+  }
+
+  scrollOverlay(ticks: number): void {
+    if (this.overlay.kind === "approval") {
+      const nextScroll = Math.max(0, this.overlay.scrollLine + ticks);
+      this.overlay = { ...this.overlay, scrollLine: nextScroll };
+      this.emit();
+      return;
+    }
+
+    if (this.overlay.kind === "question") {
+      const { item } = this.getActiveOverlayQuestion();
+      const q = item?.questions[this.overlay.questionIndex];
+      const totalPages = Math.max(1, Math.ceil((q?.options.length ?? 0) / 4));
+      const nextPage =
+        (((this.overlay.optionPage + ticks) % totalPages) + totalPages) % totalPages;
+      this.overlay = { ...this.overlay, optionPage: nextPage };
+      this.emit();
+    }
+  }
+
+  /**
+   * Selects an option on the active question overlay.
+   * For single-select: advances to the next question or returns complete `answers` ready to submit.
+   * For multi-select: toggles the option in-place (submit button finalizes).
+   */
+  selectQuestionOption(
+    optionIndexInPage: number
+  ): {
+    readyToSubmit: boolean;
+    threadId?: string;
+    requestId?: string;
+    answers?: Record<string, string | string[]>;
+  } {
+    if (this.overlay.kind !== "question") return { readyToSubmit: false };
+    const { item } = this.getActiveOverlayQuestion();
+    if (!item) return { readyToSubmit: false };
+    const question = item.questions[this.overlay.questionIndex];
+    if (!question) return { readyToSubmit: false };
+
+    const absIdx = this.overlay.optionPage * 4 + optionIndexInPage;
+    const opt = question.options[absIdx];
+    if (!opt) return { readyToSubmit: false };
+
+    const prevSelected = this.overlay.selectedByQuestionId[question.id] ?? [];
+    if (question.multiSelect) {
+      const exists = prevSelected.includes(opt.label);
+      const nextSelected = exists
+        ? prevSelected.filter((l) => l !== opt.label)
+        : [...prevSelected, opt.label];
+      this.overlay = {
+        ...this.overlay,
+        selectedByQuestionId: {
+          ...this.overlay.selectedByQuestionId,
+          [question.id]: nextSelected
+        }
+      };
+      this.emit();
+      return { readyToSubmit: false };
+    }
+
+    // Single-select: record answer & advance or submit
+    const updatedMap: Record<string, string[]> = {
+      ...this.overlay.selectedByQuestionId,
+      [question.id]: [opt.label]
+    };
+
+    if (this.overlay.questionIndex + 1 < item.questions.length) {
+      this.overlay = {
+        ...this.overlay,
+        questionIndex: this.overlay.questionIndex + 1,
+        optionPage: 0,
+        selectedByQuestionId: updatedMap
+      };
+      this.emit();
+      return { readyToSubmit: false };
+    }
+
+    const answers = this.buildAnswersPayload(item, updatedMap);
+    return {
+      readyToSubmit: true,
+      threadId: item.threadId,
+      requestId: item.requestId,
+      answers
+    };
+  }
+
+  submitCurrentMultiSelectQuestion(): {
+    readyToSubmit: boolean;
+    threadId?: string;
+    requestId?: string;
+    answers?: Record<string, string | string[]>;
+  } {
+    if (this.overlay.kind !== "question") return { readyToSubmit: false };
+    const { item } = this.getActiveOverlayQuestion();
+    if (!item) return { readyToSubmit: false };
+    const question = item.questions[this.overlay.questionIndex];
+    if (!question) return { readyToSubmit: false };
+
+    if (this.overlay.questionIndex + 1 < item.questions.length) {
+      this.overlay = {
+        ...this.overlay,
+        questionIndex: this.overlay.questionIndex + 1,
+        optionPage: 0
+      };
+      this.emit();
+      return { readyToSubmit: false };
+    }
+
+    return {
+      readyToSubmit: true,
+      threadId: item.threadId,
+      requestId: item.requestId,
+      answers: this.buildAnswersPayload(item, this.overlay.selectedByQuestionId)
+    };
+  }
+
+  private buildAnswersPayload(
+    item: PendingQuestionItem,
+    selectedMap: Record<string, string[]>
+  ): Record<string, string | string[]> {
+    const answers: Record<string, string | string[]> = {};
+    for (const q of item.questions) {
+      const picks = selectedMap[q.id] ?? [];
+      if (q.multiSelect) {
+        answers[q.id] = picks;
+      } else if (picks[0]) {
+        answers[q.id] = picks[0];
+      }
+    }
+    return answers;
+  }
+
+  /**
+   * Optimistically removes a just-answered request from local cache and advances
+   * to the next waiting approval (or question), closing the overlay if empty.
+   */
+  markRequestResolvedLocally(threadId: string, requestId: string): void {
+    const thread = this.threads.get(threadId);
+    if (thread && thread.pendingRuntimeRequest?.id === requestId) {
+      this.threads.set(threadId, { ...thread, pendingRuntimeRequest: null });
+    }
+    const cached = this.projections.get(threadId);
+    if (cached?.payload.runtimeRequests) {
+      const updatedReqs = cached.payload.runtimeRequests.map((r) =>
+        r.id === requestId ? { ...r, status: "resolved" as const } : r
+      );
+      this.projections.set(threadId, {
+        ...cached,
+        payload: { ...cached.payload, runtimeRequests: updatedReqs }
+      });
+    }
+    this.reconcileOverlayAfterUpdate();
+    this.emit();
+  }
+
+  private reconcileOverlayAfterUpdate(): void {
+    if (this.overlay.kind === "approval") {
+      const targetId = this.overlay.requestId;
+      const originSlot = this.overlay.originSlot;
+      const approvals = this.getPendingApprovalQueue();
+      if (approvals.length > 0) {
+        const stillThere = approvals.find((a) => a.requestId === targetId);
+        if (!stillThere) {
+          const next = approvals[0]!;
+          this.overlay = { kind: "approval", requestId: next.requestId, scrollLine: 0, originSlot };
+          this.focusedThreadId = next.threadId;
+        }
+        return;
+      }
+      // If approvals cleared but a question is waiting, transition smoothly to question overlay
+      const questions = this.getPendingQuestionQueue();
+      if (questions.length > 0) {
+        const nextQ = questions[0]!;
+        this.overlay = {
+          kind: "question",
+          requestId: nextQ.requestId,
+          questionIndex: 0,
+          optionPage: 0,
+          selectedByQuestionId: {},
+          originSlot
+        };
+        this.focusedThreadId = nextQ.threadId;
+        return;
+      }
+      this.overlay = { kind: "none" };
+      return;
+    }
+
+    if (this.overlay.kind === "question") {
+      const targetId = this.overlay.requestId;
+      const originSlot = this.overlay.originSlot;
+      const questions = this.getPendingQuestionQueue();
+      if (questions.length > 0) {
+        const stillThere = questions.find((q) => q.requestId === targetId);
+        if (!stillThere) {
+          const nextQ = questions[0]!;
+          this.overlay = {
+            kind: "question",
+            requestId: nextQ.requestId,
+            questionIndex: 0,
+            optionPage: 0,
+            selectedByQuestionId: {},
+            originSlot
+          };
+          this.focusedThreadId = nextQ.threadId;
+        }
+        return;
+      }
+      const approvals = this.getPendingApprovalQueue();
+      if (approvals.length > 0) {
+        const next = approvals[0]!;
+        this.overlay = { kind: "approval", requestId: next.requestId, scrollLine: 0, originSlot };
+        this.focusedThreadId = next.threadId;
+        return;
+      }
+      this.overlay = { kind: "none" };
+    }
   }
 }

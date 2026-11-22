@@ -41,8 +41,16 @@ import {
   RUNTIME_MODE_ORDER,
   T3Store
 } from "./store.js";
+import {
+  handleOverlayDialRotate,
+  handleOverlayDialTapOrPress,
+  handleOverlayKeyPress,
+  renderOverlayDialSvg,
+  renderOverlayKeySvg,
+  type SurfaceDispatchCallbacks
+} from "./surface.js";
 import { T3Client } from "./t3-client.js";
-import type { QuickPromptSettings, RuntimeMode } from "./types.js";
+import type { NewThreadSettings, QuickPromptSettings, RuntimeMode } from "./types.js";
 
 const PLUGIN_ID = "com.charlesbine.t3-deck";
 const LONG_PRESS_MS = 650;
@@ -56,7 +64,7 @@ function openThreadInApp(envId: string | null, threadId: string): void {
   if (envId) {
     openUrl(`t3code://threads/${encodeURIComponent(envId)}/${encodeURIComponent(threadId)}`);
   } else {
-    openUrl("t3code://new");
+    openUrl("t3code://app/");
   }
 }
 
@@ -75,12 +83,18 @@ class LongPressTracker {
     this.timers.set(actionId, timer);
   }
 
-  up(actionId: string, onShort: () => void | Promise<void>): void {
-    const timer = this.timers.get(actionId);
-    if (timer) {
-      clearTimeout(timer);
-      this.timers.delete(actionId);
+  /** Consumes a pending long-press release so releasing a key that opened an overlay won't tap inside it. */
+  consumeLongRelease(actionId: string): boolean {
+    if (this.firedLong.has(actionId)) {
+      this.firedLong.delete(actionId);
+      this.clear(actionId);
+      return true;
     }
+    return false;
+  }
+
+  up(actionId: string, onShort: () => void | Promise<void>): void {
+    this.clear(actionId);
     if (this.firedLong.has(actionId)) {
       this.firedLong.delete(actionId);
       return;
@@ -88,7 +102,7 @@ class LongPressTracker {
     void onShort();
   }
 
-  private clear(actionId: string): void {
+  clear(actionId: string): void {
     const timer = this.timers.get(actionId);
     if (timer) {
       clearTimeout(timer);
@@ -99,6 +113,7 @@ class LongPressTracker {
 
 const store = new T3Store();
 const pressTracker = new LongPressTracker();
+const fetchingProjections = new Set<string>();
 
 const client = new T3Client(
   {
@@ -106,6 +121,7 @@ const client = new T3Client(
     onConfigSnapshot: (cfg) => store.applyConfigSnapshot(cfg),
     onProvidersUpdated: (providers) => store.applyProvidersUpdated(providers),
     onSettingsUpdated: (settings) => store.applySettingsUpdated(settings),
+    onPeerLinksUpdated: (links) => store.applyPeerLinksUpdated(links),
     onUsageLimitSourcesUpdated: (sources) => store.applyUsageLimitSourcesUpdated(sources),
     onShellSnapshot: (projects, threads, isEnrichment) =>
       store.applyShellSnapshot(projects, threads, isEnrichment),
@@ -123,6 +139,64 @@ const client = new T3Client(
   }
 );
 
+const surfaceCallbacks: SurfaceDispatchCallbacks = {
+  approveRequest: (threadId, requestId, decision) =>
+    client.approveRequest(threadId, requestId, decision),
+  respondToUserInput: (threadId, requestId, answers) =>
+    client.respondToUserInput(threadId, requestId, answers),
+  dismissUserInput: (threadId, requestId) => client.dismissUserInput(threadId, requestId),
+  sendPrompt: async (threadId, text, mode) => {
+    const thread = store.getThreadById(threadId);
+    await client.sendQuickMessage(threadId, text, mode, thread?.activeRunId ?? null);
+  },
+  snoozeThreadUntil: (threadId, iso) => client.snoozeThreadUntil(threadId, iso),
+  unsnoozeThread: (threadId) => client.unsnoozeThread(threadId),
+  settleToggle: async (threadId) => {
+    const thread = store.getThreadById(threadId);
+    if (!thread) return;
+    if (isThreadSettled(thread)) {
+      await client.unsettleThread(threadId);
+      store.setToast("settle", "UNSETTLED", "#38BDF8");
+    } else {
+      await client.settleThread(threadId);
+      store.setToast("settle", "SETTLED", "#10B981");
+    }
+  },
+  pinToggle: async (threadId) => {
+    const thread = store.getThreadById(threadId);
+    if (!thread) return;
+    if (thread.pinnedAt) {
+      await client.unpinThread(threadId);
+      store.setToast("settle", "UNPINNED", "#94A3B8");
+    } else {
+      await client.pinThread(threadId);
+      store.setToast("settle", "PINNED ★", "#F59E0B");
+    }
+  },
+  markThreadUnread: (threadId) => client.markThreadUnread(threadId),
+  interruptOrStop: async (threadId) => {
+    const thread = store.getThreadById(threadId);
+    const runId = thread?.activeRunId ?? thread?.latestRunId;
+    if (thread && runId && isThreadRunning(thread)) {
+      await client.interruptRun(thread.id, runId);
+      store.setToast("stop", "STOPPED", "#EF4444");
+    }
+  },
+  createAndOpenThread: async (input) => {
+    const threadId = await client.createThread(input);
+    store.focusThread(threadId);
+    openThreadInApp(store.environmentId, threadId);
+  },
+  openThread: (threadId) => openThreadInApp(store.environmentId, threadId),
+  openUrl: (url) => openUrl(url),
+  resync: () => client.reconnectNow()
+};
+
+function keySlot(actionObj: { isKey(): boolean; coordinates?: { column: number; row: number } }, fallback: number): number {
+  const c = actionObj.isKey() ? actionObj.coordinates : undefined;
+  return c ? c.row * 4 + c.column : fallback;
+}
+
 function setKeySvg(key: KeyAction, svg: string): Promise<void> {
   return key.setImage(svgDataUri(svg));
 }
@@ -131,8 +205,96 @@ function setDialSvg(dial: DialAction, svg: string): Promise<void> {
   return dial.setFeedback({ canvas: svgDataUri(svg) });
 }
 
+function renderKeySurface(key: KeyAction, baseSvg: () => string): Promise<void> {
+  if (store.overlay.kind !== "none" && key.coordinates) {
+    const ovSvg = renderOverlayKeySvg(store, key.coordinates.column, key.coordinates.row);
+    if (ovSvg) return setKeySvg(key, ovSvg);
+  }
+  return setKeySvg(key, baseSvg());
+}
+
+function renderDialSurface(dial: DialAction, baseSvg: () => string): Promise<void> {
+  if (store.overlay.kind !== "none") {
+    const ovSvg = renderOverlayDialSvg(store, dial.coordinates.column);
+    if (ovSvg) return setDialSvg(dial, ovSvg);
+  }
+  return setDialSvg(dial, baseSvg());
+}
+
+function routeOverlayKeyDown(ev: KeyDownEvent): boolean {
+  if (store.overlay.kind === "none") return false;
+  if (!ev.action.isKey() || !ev.action.coordinates) return false;
+  const { column, row } = ev.action.coordinates;
+  pressTracker.down(ev.action.id, async () => {
+    try {
+      await handleOverlayKeyPress(store, column, row, true, surfaceCallbacks);
+    } catch (err) {
+      streamDeck.logger.error(`overlay long key failed: ${String(err)}`);
+      await ev.action.showAlert();
+    }
+  });
+  return true;
+}
+
+function routeOverlayKeyUp(ev: KeyUpEvent): boolean {
+  if (pressTracker.consumeLongRelease(ev.action.id)) return true;
+  if (store.overlay.kind === "none") return false;
+  if (!ev.action.isKey() || !ev.action.coordinates) return false;
+  const { column, row } = ev.action.coordinates;
+  pressTracker.up(ev.action.id, async () => {
+    try {
+      await handleOverlayKeyPress(store, column, row, false, surfaceCallbacks);
+    } catch (err) {
+      streamDeck.logger.error(`overlay key failed: ${String(err)}`);
+      await ev.action.showAlert();
+    }
+  });
+  return true;
+}
+
+function routeOverlayDialRotate(ev: DialRotateEvent): boolean {
+  if (store.overlay.kind === "none") return false;
+  return handleOverlayDialRotate(store, ev.action.coordinates.column, ev.payload.ticks);
+}
+
+function routeOverlayDialTapOrPress(dial: DialAction): boolean {
+  if (store.overlay.kind === "none") return false;
+  void handleOverlayDialTapOrPress(store, dial.coordinates.column, surfaceCallbacks).catch((err) => {
+    streamDeck.logger.error(`overlay dial action failed: ${String(err)}`);
+    void dial.showAlert();
+  });
+  return true;
+}
+
+function syncBackgroundData(): void {
+  if (!client.isConnected) return;
+
+  // 1. Fetch full thread projection on demand whenever a pending approval/question arrives
+  for (const threadId of store.getThreadsNeedingProjectionFetch()) {
+    if (fetchingProjections.has(threadId)) continue;
+    fetchingProjections.add(threadId);
+    void client
+      .getThreadProjection(threadId)
+      .then((payload) => {
+        store.applyThreadProjection(threadId, payload);
+      })
+      .catch((err) => {
+        streamDeck.logger.warn(`getThreadProjection(${threadId}) failed: ${String(err)}`);
+      })
+      .finally(() => {
+        fetchingProjections.delete(threadId);
+      });
+  }
+
+  // 2. Keep live AI prompt suggestion subscribed for the focused thread
+  const focusedId = store.getFocusedThread()?.id ?? null;
+  client.watchPromptSuggestion(focusedId, (suggestion) => {
+    store.setPromptSuggestion(suggestion);
+  });
+}
+
 // ============================================================
-// KEY ACTIONS (4x2 Mission Control + Bonus Thread Slot)
+// KEY ACTIONS (4x2 Mission Control + Panoramic Overlays)
 // ============================================================
 
 @action({ UUID: `${PLUGIN_ID}.fleet-attention` })
@@ -142,19 +304,33 @@ class FleetAttentionAction extends SingletonAction {
   }
 
   override onKeyDown(ev: KeyDownEvent): void {
-    if (store.connectionState !== "connected") {
-      void client.reconnectNow();
-      store.setToast("fleet", "RECONNECTING", "#38BDF8");
-      return;
-    }
-    const target = store.getNextAttentionThread();
-    if (!target) {
-      void ev.action.showAlert();
-      return;
-    }
-    store.focusThread(target.id);
-    openThreadInApp(store.environmentId, target.id);
-    store.setToast("fleet", "FOCUSED", "#38BDF8", 900);
+    if (routeOverlayKeyDown(ev)) return;
+    const slot = keySlot(ev.action, 0);
+    pressTracker.down(ev.action.id, () => {
+      store.openFleetOverlay(slot);
+    });
+  }
+
+  override onKeyUp(ev: KeyUpEvent): void {
+    if (routeOverlayKeyUp(ev)) return;
+    const slot = keySlot(ev.action, 0);
+    pressTracker.up(ev.action.id, async () => {
+      if (store.connectionState !== "connected") {
+        await client.reconnectNow();
+        store.setToast("fleet", "RECONNECTING", "#38BDF8");
+        return;
+      }
+      if (store.openApprovalOverlay(undefined, slot)) return;
+      if (store.openQuestionOverlay(undefined, slot)) return;
+      const target = store.getNextAttentionThread();
+      if (!target) {
+        store.openFleetOverlay(slot);
+        return;
+      }
+      store.focusThread(target.id);
+      openThreadInApp(store.environmentId, target.id);
+      store.setToast("fleet", "FOCUSED", "#38BDF8", 900);
+    });
   }
 
   refreshAll(): void {
@@ -164,12 +340,13 @@ class FleetAttentionAction extends SingletonAction {
   }
 
   private render(key: KeyAction): Promise<void> {
-    const svg = renderFleetAttentionKey(
-      store.getFleetStats(),
-      store.connectionState === "connected",
-      store.getToast("fleet")
+    return renderKeySurface(key, () =>
+      renderFleetAttentionKey(
+        store.getFleetStats(),
+        store.connectionState === "connected",
+        store.getToast("fleet")
+      )
     );
-    return setKeySvg(key, svg);
   }
 }
 
@@ -180,23 +357,17 @@ class ApproveAction extends SingletonAction {
   }
 
   override onKeyDown(ev: KeyDownEvent): void {
-    pressTracker.down(ev.action.id, async () => {
-      const target = store.getActionableApprovalThread();
-      if (!target || !isApprovalRequest(target) || !target.pendingRuntimeRequest) {
-        await ev.action.showAlert();
-        return;
-      }
-      try {
-        await client.approveRequest(target.id, target.pendingRuntimeRequest.id, "acceptForSession");
-        store.setToast("approve", "SESSION OK", "#10B981");
-      } catch (err) {
-        streamDeck.logger.error(`acceptForSession failed: ${String(err)}`);
-        await ev.action.showAlert();
+    if (routeOverlayKeyDown(ev)) return;
+    pressTracker.down(ev.action.id, () => {
+      // Never blindly session-approve from base layer — open panoramic Approval Inspector first
+      if (!store.openApprovalOverlay() && !store.openQuestionOverlay()) {
+        void ev.action.showAlert();
       }
     });
   }
 
   override onKeyUp(ev: KeyUpEvent): void {
+    if (routeOverlayKeyUp(ev)) return;
     pressTracker.up(ev.action.id, async () => {
       const target = store.getActionableApprovalThread();
       if (!target || !target.pendingRuntimeRequest) {
@@ -207,19 +378,12 @@ class ApproveAction extends SingletonAction {
       }
 
       if (isQuestionRequest(target)) {
-        store.focusThread(target.id);
-        openThreadInApp(store.environmentId, target.id);
-        store.setToast("approve", "OPENED", "#C084FC", 900);
+        store.openQuestionOverlay(target.id);
         return;
       }
 
-      try {
-        await client.approveRequest(target.id, target.pendingRuntimeRequest.id, "accept");
-        store.setToast("approve", "APPROVED", "#10B981");
-      } catch (err) {
-        streamDeck.logger.error(`approve failed: ${String(err)}`);
-        await ev.action.showAlert();
-      }
+      // 2-step safe approval: first press opens the panoramic 1600x200 Approval Inspector
+      store.openApprovalOverlay(target.id);
     });
   }
 
@@ -230,12 +394,14 @@ class ApproveAction extends SingletonAction {
   }
 
   private render(key: KeyAction): Promise<void> {
-    const svg = renderApproveKey(
-      store.getActionableApprovalThread(),
-      store.getFocusedThread(),
-      store.getToast("approve")
+    return renderKeySurface(key, () =>
+      renderApproveKey(
+        store.getActionableApprovalThread(),
+        store.getFocusedThread(),
+        store.getToast("approve"),
+        store.getPendingApprovalQueue().length
+      )
     );
-    return setKeySvg(key, svg);
   }
 }
 
@@ -246,6 +412,7 @@ class StopDenyAction extends SingletonAction {
   }
 
   override onKeyDown(ev: KeyDownEvent): void {
+    if (routeOverlayKeyDown(ev)) return;
     pressTracker.down(ev.action.id, async () => {
       const focused = store.getFocusedThread();
       if (!focused) {
@@ -263,16 +430,12 @@ class StopDenyAction extends SingletonAction {
   }
 
   override onKeyUp(ev: KeyUpEvent): void {
+    if (routeOverlayKeyUp(ev)) return;
     pressTracker.up(ev.action.id, async () => {
       const approval = store.getActionableApprovalThread();
       if (approval && isApprovalRequest(approval) && approval.pendingRuntimeRequest) {
-        try {
-          await client.approveRequest(approval.id, approval.pendingRuntimeRequest.id, "decline");
-          store.setToast("stop", "DECLINED", "#FB7185");
-        } catch (err) {
-          streamDeck.logger.error(`decline failed: ${String(err)}`);
-          await ev.action.showAlert();
-        }
+        // Open Approval Inspector so you can confirm which request you are declining
+        store.openApprovalOverlay(approval.id);
         return;
       }
 
@@ -299,12 +462,13 @@ class StopDenyAction extends SingletonAction {
   }
 
   private render(key: KeyAction): Promise<void> {
-    const svg = renderStopDenyKey(
-      store.getActionableApprovalThread(),
-      store.getFocusedThread(),
-      store.getToast("stop")
+    return renderKeySurface(key, () =>
+      renderStopDenyKey(
+        store.getActionableApprovalThread(),
+        store.getFocusedThread(),
+        store.getToast("stop")
+      )
     );
-    return setKeySvg(key, svg);
   }
 }
 
@@ -315,28 +479,15 @@ class SettlePinAction extends SingletonAction {
   }
 
   override onKeyDown(ev: KeyDownEvent): void {
-    pressTracker.down(ev.action.id, async () => {
-      const thread = store.getFocusedThread();
-      if (!thread) {
-        await ev.action.showAlert();
-        return;
-      }
-      try {
-        if (thread.pinnedAt) {
-          await client.unpinThread(thread.id);
-          store.setToast("settle", "UNPINNED", "#94A3B8");
-        } else {
-          await client.pinThread(thread.id);
-          store.setToast("settle", "PINNED ★", "#F59E0B");
-        }
-      } catch (err) {
-        streamDeck.logger.error(`pin toggle failed: ${String(err)}`);
-        await ev.action.showAlert();
-      }
+    if (routeOverlayKeyDown(ev)) return;
+    const slot = keySlot(ev.action, 3);
+    pressTracker.down(ev.action.id, () => {
+      store.openThreadToolsOverlay(slot);
     });
   }
 
   override onKeyUp(ev: KeyUpEvent): void {
+    if (routeOverlayKeyUp(ev)) return;
     pressTracker.up(ev.action.id, async () => {
       const thread = store.getFocusedThread();
       if (!thread) {
@@ -344,13 +495,7 @@ class SettlePinAction extends SingletonAction {
         return;
       }
       try {
-        if (isThreadSettled(thread)) {
-          await client.unsettleThread(thread.id);
-          store.setToast("settle", "UNSETTLED", "#38BDF8");
-        } else {
-          await client.settleThread(thread.id);
-          store.setToast("settle", "SETTLED", "#10B981");
-        }
+        await surfaceCallbacks.settleToggle(thread.id);
       } catch (err) {
         streamDeck.logger.error(`settle toggle failed: ${String(err)}`);
         await ev.action.showAlert();
@@ -365,19 +510,69 @@ class SettlePinAction extends SingletonAction {
   }
 
   private render(key: KeyAction): Promise<void> {
-    return setKeySvg(key, renderSettlePinKey(store.getFocusedThread(), store.getToast("settle")));
+    return renderKeySurface(key, () =>
+      renderSettlePinKey(store.getFocusedThread(), store.getToast("settle"))
+    );
   }
 }
 
 @action({ UUID: `${PLUGIN_ID}.new-thread` })
-class NewThreadAction extends SingletonAction {
-  override onWillAppear(ev: WillAppearEvent): void | Promise<void> {
+class NewThreadAction extends SingletonAction<NewThreadSettings> {
+  private settingsByAction = new Map<string, NewThreadSettings>();
+
+  override onWillAppear(ev: WillAppearEvent<NewThreadSettings>): void | Promise<void> {
+    this.settingsByAction.set(ev.action.id, ev.payload.settings ?? {});
     if (ev.action.isKey()) return this.render(ev.action);
   }
 
-  override onKeyDown(): void {
-    openUrl("t3code://new");
-    store.setToast("new", "OPENED", "#38BDF8", 900);
+  override onDidReceiveSettings(ev: DidReceiveSettingsEvent<NewThreadSettings>): void {
+    this.settingsByAction.set(ev.action.id, ev.payload.settings ?? {});
+    if (ev.action.isKey()) void this.render(ev.action);
+  }
+
+  override onKeyDown(ev: KeyDownEvent<NewThreadSettings>): void {
+    this.settingsByAction.set(ev.action.id, ev.payload.settings ?? {});
+    if (routeOverlayKeyDown(ev)) return;
+    const slot = keySlot(ev.action, 4);
+    const cfg = this.settingsByAction.get(ev.action.id) ?? {};
+    const firstPicker = cfg.firstPicker ?? "project";
+    const defaultMode = cfg.defaultInteractionMode === "plan" ? "plan" : "default";
+
+    pressTracker.down(ev.action.id, () => {
+      store.openNewChatBuilderOverlay(slot, firstPicker, defaultMode);
+    });
+  }
+
+  override onKeyUp(ev: KeyUpEvent): void {
+    if (routeOverlayKeyUp(ev)) return;
+    pressTracker.up(ev.action.id, async () => {
+      const cfg = this.settingsByAction.get(ev.action.id) ?? {};
+      const defaultMode = cfg.defaultInteractionMode === "plan" ? "plan" : "default";
+      const focused = store.getFocusedThread();
+      const targetProj =
+        (focused ? store.getProjectById(focused.projectId) : null) ?? store.getLaunchProjects()[0];
+      if (!targetProj) {
+        await ev.action.showAlert();
+        return;
+      }
+      const modelSelection = store.getDefaultModelSelectionForProject(targetProj);
+      if (!modelSelection) {
+        await ev.action.showAlert();
+        return;
+      }
+      try {
+        await surfaceCallbacks.createAndOpenThread({
+          projectId: targetProj.id,
+          modelSelection,
+          interactionMode: defaultMode,
+          workspaceMode: targetProj.defaultThreadEnvMode === "worktree" ? "worktree" : "local"
+        });
+        store.setToast("new", targetProj.title.toUpperCase(), "#38BDF8", 1100);
+      } catch (err) {
+        streamDeck.logger.error(`createAndOpenThread failed: ${String(err)}`);
+        await ev.action.showAlert();
+      }
+    });
   }
 
   refreshAll(): void {
@@ -387,9 +582,18 @@ class NewThreadAction extends SingletonAction {
   }
 
   private render(key: KeyAction): Promise<void> {
-    const focused = store.getFocusedThread();
-    const proj = focused ? store.getProjectName(focused.projectId) : undefined;
-    return setKeySvg(key, renderNewThreadKey(proj, store.getToast("new")));
+    return renderKeySurface(key, () => {
+      const focused = store.getFocusedThread();
+      const proj = focused ? store.getProjectName(focused.projectId) : undefined;
+      const cfg = this.settingsByAction.get(key.id) ?? {};
+      const holdHint =
+        cfg.firstPicker === "environment"
+          ? "HOLD: PICK ENV"
+          : cfg.firstPicker === "model"
+            ? "HOLD: MODELS"
+            : "HOLD: PROJECTS";
+      return renderNewThreadKey(proj, store.getToast("new"), holdHint);
+    });
   }
 }
 
@@ -409,16 +613,15 @@ class QuickPromptAction extends SingletonAction<QuickPromptSettings> {
 
   override onKeyDown(ev: KeyDownEvent<QuickPromptSettings>): void {
     this.settingsByAction.set(ev.action.id, ev.payload.settings ?? {});
+    if (routeOverlayKeyDown(ev)) return;
+    const slot = keySlot(ev.action, 5);
     pressTracker.down(ev.action.id, () => {
-      const thread = store.getFocusedThread();
-      if (thread) {
-        openThreadInApp(store.environmentId, thread.id);
-        store.setToast(`prompt:${ev.action.id}`, "OPENED", "#38BDF8", 900);
-      }
+      store.openPromptsOverlay(slot);
     });
   }
 
   override onKeyUp(ev: KeyUpEvent<QuickPromptSettings>): void {
+    if (routeOverlayKeyUp(ev)) return;
     pressTracker.up(ev.action.id, async () => {
       const thread = store.getFocusedThread();
       if (!thread) {
@@ -449,18 +652,17 @@ class QuickPromptAction extends SingletonAction<QuickPromptSettings> {
   }
 
   private render(key: KeyAction): Promise<void> {
-    const cfg = this.settingsByAction.get(key.id) ?? {};
-    const label = (cfg.label || "CONTINUE").trim();
-    const mode = cfg.mode === "steer" || cfg.mode === "queue" ? cfg.mode : "auto";
-    return setKeySvg(
-      key,
-      renderQuickPromptKey(
+    return renderKeySurface(key, () => {
+      const cfg = this.settingsByAction.get(key.id) ?? {};
+      const label = (cfg.label || "CONTINUE").trim();
+      const mode = cfg.mode === "steer" || cfg.mode === "queue" ? cfg.mode : "auto";
+      return renderQuickPromptKey(
         store.getFocusedThread(),
         label,
         mode,
         store.getToast(`prompt:${key.id}`)
-      )
-    );
+      );
+    });
   }
 }
 
@@ -471,6 +673,7 @@ class OpenThreadAction extends SingletonAction {
   }
 
   override onKeyDown(ev: KeyDownEvent): void {
+    if (routeOverlayKeyDown(ev)) return;
     pressTracker.down(ev.action.id, () => {
       const thread = store.getFocusedThread();
       const pr = thread ? primaryPullRequest(thread) : null;
@@ -485,6 +688,7 @@ class OpenThreadAction extends SingletonAction {
   }
 
   override onKeyUp(ev: KeyUpEvent): void {
+    if (routeOverlayKeyUp(ev)) return;
     pressTracker.up(ev.action.id, async () => {
       const thread = store.getFocusedThread();
       if (!thread) {
@@ -503,9 +707,11 @@ class OpenThreadAction extends SingletonAction {
   }
 
   private render(key: KeyAction): Promise<void> {
-    const thread = store.getFocusedThread();
-    const projectName = thread ? store.getProjectName(thread.projectId) : "T3";
-    return setKeySvg(key, renderOpenThreadKey(thread, projectName, store.getToast("open")));
+    return renderKeySurface(key, () => {
+      const thread = store.getFocusedThread();
+      const projectName = thread ? store.getProjectName(thread.projectId) : "T3";
+      return renderOpenThreadKey(thread, projectName, store.getToast("open"));
+    });
   }
 }
 
@@ -516,18 +722,20 @@ class SnoozeSyncAction extends SingletonAction {
   }
 
   override onKeyDown(ev: KeyDownEvent): void {
-    pressTracker.down(ev.action.id, async () => {
-      store.setToast("snooze", "SYNCING", "#38BDF8", 1200);
-      try {
-        await client.reconnectNow();
-      } catch (err) {
-        streamDeck.logger.error(`reconnect failed: ${String(err)}`);
-        await ev.action.showAlert();
+    if (routeOverlayKeyDown(ev)) return;
+    const slot = keySlot(ev.action, 7);
+    pressTracker.down(ev.action.id, () => {
+      if (store.connectionState !== "connected") {
+        store.setToast("snooze", "SYNCING", "#38BDF8", 1200);
+        void client.reconnectNow();
+        return;
       }
+      store.openSnoozeOverlay(slot);
     });
   }
 
   override onKeyUp(ev: KeyUpEvent): void {
+    if (routeOverlayKeyUp(ev)) return;
     pressTracker.up(ev.action.id, async () => {
       if (store.connectionState !== "connected") {
         await client.reconnectNow();
@@ -543,8 +751,9 @@ class SnoozeSyncAction extends SingletonAction {
           await client.unsnoozeThread(thread.id);
           store.setToast("snooze", "UNSNOOZED", "#38BDF8");
         } else {
-          await client.snoozeThread(thread.id, 1);
-          store.setToast("snooze", "SNOOZED 1H", "#818CF8");
+          const def = store.getDefaultSnoozePreset();
+          await client.snoozeThreadUntil(thread.id, def.snoozedUntilIso);
+          store.setToast("snooze", `SNOOZED ${def.shortLabel}`, "#818CF8");
         }
       } catch (err) {
         streamDeck.logger.error(`snooze toggle failed: ${String(err)}`);
@@ -560,12 +769,12 @@ class SnoozeSyncAction extends SingletonAction {
   }
 
   private render(key: KeyAction): Promise<void> {
-    return setKeySvg(
-      key,
+    return renderKeySurface(key, () =>
       renderSnoozeSyncKey(
         store.getFocusedThread(),
         store.connectionState === "connected",
-        store.getToast("snooze")
+        store.getToast("snooze"),
+        store.getDefaultSnoozePreset().shortLabel
       )
     );
   }
@@ -578,6 +787,7 @@ class ThreadSlotAction extends SingletonAction {
   }
 
   override onKeyDown(ev: KeyDownEvent): void {
+    if (routeOverlayKeyDown(ev)) return;
     if (!ev.action.isKey()) return;
     const idx = this.slotIndex(ev.action);
     const thread = store.getFilteredThreads()[idx];
@@ -586,7 +796,13 @@ class ThreadSlotAction extends SingletonAction {
       return;
     }
     store.focusThread(thread.id);
+    if (store.openApprovalOverlay(thread.id)) return;
+    if (store.openQuestionOverlay(thread.id)) return;
     openThreadInApp(store.environmentId, thread.id);
+  }
+
+  override onKeyUp(ev: KeyUpEvent): void {
+    routeOverlayKeyUp(ev);
   }
 
   refreshAll(): void {
@@ -601,18 +817,22 @@ class ThreadSlotAction extends SingletonAction {
   }
 
   private render(key: KeyAction): Promise<void> {
-    const idx = this.slotIndex(key);
-    const thread = store.getFilteredThreads()[idx] ?? null;
-    const projectName = thread ? store.getProjectName(thread.projectId) : "";
-    return setKeySvg(
-      key,
-      renderThreadSlotKey(idx + 1, thread, projectName, store.connectionState === "connected")
-    );
+    return renderKeySurface(key, () => {
+      const idx = this.slotIndex(key);
+      const thread = store.getFilteredThreads()[idx] ?? null;
+      const projectName = thread ? store.getProjectName(thread.projectId) : "";
+      return renderThreadSlotKey(
+        idx + 1,
+        thread,
+        projectName,
+        store.connectionState === "connected"
+      );
+    });
   }
 }
 
 // ============================================================
-// FULL-CANVAS DIAL ACTIONS (Stream Deck+ LCD Touch Strip)
+// FULL-CANVAS DIAL ACTIONS (Stream Deck+ Panoramic Touch Strip)
 // ============================================================
 
 @action({ UUID: `${PLUGIN_ID}.thread-dial` })
@@ -622,10 +842,12 @@ class ThreadDialAction extends SingletonAction {
   }
 
   override onDialRotate(ev: DialRotateEvent): void {
+    if (routeOverlayDialRotate(ev)) return;
     store.stepFocus(ev.payload.ticks);
   }
 
   override onDialUp(ev: DialUpEvent): void {
+    if (routeOverlayDialTapOrPress(ev.action)) return;
     const thread = store.getFocusedThread();
     if (!thread) {
       void ev.action.showAlert();
@@ -635,7 +857,8 @@ class ThreadDialAction extends SingletonAction {
     store.setToast("thread-dial", "OPENED IN T3", "#38BDF8", 900);
   }
 
-  override onTouchTap(): void {
+  override onTouchTap(ev: TouchTapEvent): void {
+    if (routeOverlayDialTapOrPress(ev.action)) return;
     const next = store.cycleFilterMode();
     store.setToast("thread-dial", `FILTER: ${next.toUpperCase()}`, "#38BDF8", 900);
   }
@@ -647,19 +870,20 @@ class ThreadDialAction extends SingletonAction {
   }
 
   private render(dial: DialAction): Promise<void> {
-    const thread = store.getFocusedThread();
-    const { index, total } = store.getFocusedIndex();
-    const projectName = thread ? store.getProjectName(thread.projectId) : "";
-    const svg = renderThreadDialCanvas(
-      thread,
-      projectName,
-      store.filterMode,
-      index,
-      total,
-      store.connectionState === "connected",
-      store.getToast("thread-dial")
-    );
-    return setDialSvg(dial, svg);
+    return renderDialSurface(dial, () => {
+      const thread = store.getFocusedThread();
+      const { index, total } = store.getFocusedIndex();
+      const projectName = thread ? store.getProjectName(thread.projectId) : "";
+      return renderThreadDialCanvas(
+        thread,
+        projectName,
+        store.filterMode,
+        index,
+        total,
+        store.connectionState === "connected",
+        store.getToast("thread-dial")
+      );
+    });
   }
 }
 
@@ -670,16 +894,19 @@ class ModelDialAction extends SingletonAction {
   }
 
   override onDialRotate(ev: DialRotateEvent): void {
+    if (routeOverlayDialRotate(ev)) return;
     store.scrubModel(ev.payload.ticks);
   }
 
   override onDialDown(ev: DialDownEvent): void {
+    if (store.overlay.kind !== "none") return;
     pressTracker.down(ev.action.id, () => {
       this.toggleScope();
     });
   }
 
   override onDialUp(ev: DialUpEvent): void {
+    if (routeOverlayDialTapOrPress(ev.action)) return;
     pressTracker.up(ev.action.id, async () => {
       if (store.pendingModelIndex !== null) {
         await this.commitPending(ev.action);
@@ -690,6 +917,7 @@ class ModelDialAction extends SingletonAction {
   }
 
   override async onTouchTap(ev: TouchTapEvent): Promise<void> {
+    if (routeOverlayDialTapOrPress(ev.action)) return;
     if (store.pendingModelIndex !== null) {
       await this.commitPending(ev.action);
     } else {
@@ -736,18 +964,19 @@ class ModelDialAction extends SingletonAction {
   }
 
   private render(dial: DialAction): Promise<void> {
-    const thread = store.getFocusedThread();
-    const { catalog, activeIndex, entry, scope } = store.getActiveModelEntry(thread);
-    const svg = renderModelDialCanvas(
-      thread,
-      catalog,
-      activeIndex,
-      store.pendingModelIndex,
-      scope,
-      entry,
-      store.getToast("model-dial")
-    );
-    return setDialSvg(dial, svg);
+    return renderDialSurface(dial, () => {
+      const thread = store.getFocusedThread();
+      const { catalog, activeIndex, entry, scope } = store.getActiveModelEntry(thread);
+      return renderModelDialCanvas(
+        thread,
+        catalog,
+        activeIndex,
+        store.pendingModelIndex,
+        scope,
+        entry,
+        store.getToast("model-dial")
+      );
+    });
   }
 }
 
@@ -758,6 +987,7 @@ class ModeEffortDialAction extends SingletonAction {
   }
 
   override async onDialRotate(ev: DialRotateEvent): Promise<void> {
+    if (routeOverlayDialRotate(ev)) return;
     const thread = store.getFocusedThread();
     if (!thread) return;
     const entry = store.getThreadModelEntry(thread);
@@ -789,15 +1019,16 @@ class ModeEffortDialAction extends SingletonAction {
       return;
     }
 
-    // Fallback when model has no effort selector: rotate cycles runtime mode
     await this.cycleRuntimeMode(ev.action, ev.payload.ticks >= 0 ? 1 : -1);
   }
 
   override async onDialUp(ev: DialUpEvent): Promise<void> {
+    if (routeOverlayDialTapOrPress(ev.action)) return;
     await this.cycleRuntimeMode(ev.action, 1);
   }
 
   override async onTouchTap(ev: TouchTapEvent): Promise<void> {
+    if (routeOverlayDialTapOrPress(ev.action)) return;
     const thread = store.getFocusedThread();
     if (!thread) return;
     const next = thread.interactionMode === "plan" ? "default" : "plan";
@@ -843,12 +1074,11 @@ class ModeEffortDialAction extends SingletonAction {
   }
 
   private render(dial: DialAction): Promise<void> {
-    const thread = store.getFocusedThread();
-    const entry = store.getThreadModelEntry(thread);
-    return setDialSvg(
-      dial,
-      renderModeEffortDialCanvas(thread, entry, store.getToast("mode-dial"))
-    );
+    return renderDialSurface(dial, () => {
+      const thread = store.getFocusedThread();
+      const entry = store.getThreadModelEntry(thread);
+      return renderModeEffortDialCanvas(thread, entry, store.getToast("mode-dial"));
+    });
   }
 }
 
@@ -859,14 +1089,17 @@ class UsageDialAction extends SingletonAction {
   }
 
   override onDialRotate(ev: DialRotateEvent): void {
+    if (routeOverlayDialRotate(ev)) return;
     store.stepUsageCard(ev.payload.ticks);
   }
 
   override async onDialUp(ev: DialUpEvent): Promise<void> {
+    if (routeOverlayDialTapOrPress(ev.action)) return;
     await this.refreshUsage(ev.action);
   }
 
   override async onTouchTap(ev: TouchTapEvent): Promise<void> {
+    if (routeOverlayDialTapOrPress(ev.action)) return;
     await this.refreshUsage(ev.action);
   }
 
@@ -887,17 +1120,16 @@ class UsageDialAction extends SingletonAction {
   }
 
   private render(dial: DialAction): Promise<void> {
-    const { card, index, total } = store.getCurrentUsageCard();
-    return setDialSvg(
-      dial,
-      renderUsageDialCanvas(
+    return renderDialSurface(dial, () => {
+      const { card, index, total } = store.getCurrentUsageCard();
+      return renderUsageDialCanvas(
         card,
         index,
         total,
         store.connectionState === "connected",
         store.getToast("usage-dial")
-      )
-    );
+      );
+    });
   }
 }
 
@@ -938,6 +1170,7 @@ const allRefreshers = [
 
 let renderTimer: NodeJS.Timeout | null = null;
 function scheduleRender(): void {
+  syncBackgroundData();
   if (renderTimer) return;
   renderTimer = setTimeout(() => {
     renderTimer = null;
