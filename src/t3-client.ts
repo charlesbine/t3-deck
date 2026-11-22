@@ -15,10 +15,14 @@ import type {
   ServerConfigPayload,
   ServerProvider,
   ServerSettingsPayload,
+  SpeechTranscriptionOptions,
   ThreadProjectionPayload,
   ThreadShell,
-  UsageLimitSourceSnapshot
+  UsageLimitSourceSnapshot,
+  VoiceCloudKeysPayload,
+  VoiceStatusPayload
 } from "./types.js";
+import { defaultSpeechOptions, encodeSpeechPcmRequest } from "./voice.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -256,14 +260,22 @@ export class T3Client {
     return session;
   }
 
-  private async mintWebSocketTicket(origin: string, forceNewSession = false): Promise<string> {
+  private async mintWebSocketTicket(
+    origin: string,
+    forceNewSession = false,
+    use?: "media"
+  ): Promise<string> {
     let session = forceNewSession ? null : this.loadStoredSession();
     if (!session) {
       session = await this.issueNewSession();
     }
 
+    const endpoint = use
+      ? `${origin}/api/auth/websocket-ticket/${encodeURIComponent(use)}`
+      : `${origin}/api/auth/websocket-ticket`;
+
     const requestTicket = async (token: string): Promise<Response> =>
-      fetch(`${origin}/api/auth/websocket-ticket`, {
+      fetch(endpoint, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -284,6 +296,36 @@ export class T3Client {
       throw new Error("WebSocket ticket response missing ticket field");
     }
     return body.ticket;
+  }
+
+  private async fetchVoiceApi(
+    apiPath: string,
+    init: RequestInit = {},
+    forceNewSession = false
+  ): Promise<Response> {
+    const origin = this.currentOrigin ?? this.readRuntimeState()?.origin;
+    if (!origin) {
+      throw new Error("T3 Code server is not running");
+    }
+    let session = forceNewSession ? null : this.loadStoredSession();
+    if (!session) {
+      session = await this.issueNewSession();
+    }
+    const doFetch = (token: string): Promise<Response> =>
+      fetch(`${origin}${apiPath}`, {
+        ...init,
+        headers: {
+          ...(init.headers ?? {}),
+          Authorization: `Bearer ${token}`
+        }
+      });
+
+    let res = await doFetch(session.token);
+    if ((res.status === 401 || res.status === 403) && !forceNewSession) {
+      session = await this.issueNewSession();
+      res = await doFetch(session.token);
+    }
+    return res;
   }
 
   private async connect(): Promise<void> {
@@ -886,4 +928,211 @@ export class T3Client {
   async refreshProviders(): Promise<void> {
     await this.callRpc("server.refreshProviders", { fresh: true });
   }
+
+  // ---- Built-in T3 Code Voice STT API (/api/voice/* + WS /ws/voice) ----
+
+  async getVoiceStatus(): Promise<VoiceStatusPayload> {
+    const res = await this.fetchVoiceApi("/api/voice/status", { method: "GET" });
+    if (!res.ok) {
+      throw new Error(`Voice status failed: HTTP ${res.status}`);
+    }
+    return (await res.json()) as VoiceStatusPayload;
+  }
+
+  async getVoiceCloudKeys(): Promise<VoiceCloudKeysPayload> {
+    const res = await this.fetchVoiceApi("/api/voice/cloud/keys", { method: "GET" });
+    if (!res.ok) {
+      return { openai: false, xai: false, openrouter: false };
+    }
+    return (await res.json()) as VoiceCloudKeysPayload;
+  }
+
+  async prepareVoiceModel(): Promise<void> {
+    const res = await this.fetchVoiceApi("/api/voice/models/prepare", { method: "POST" });
+    if (!res.ok) {
+      throw new Error(`Voice prepare failed: HTTP ${res.status}`);
+    }
+  }
+
+  async downloadVoiceModel(modelId: string): Promise<void> {
+    const res = await this.fetchVoiceApi("/api/voice/models/download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ modelId })
+    });
+    if (!res.ok) {
+      throw new Error(`Voice model download failed: HTTP ${res.status}`);
+    }
+  }
+
+  async transcribeVoiceBatch(
+    pcm: Uint8Array,
+    options: SpeechTranscriptionOptions = defaultSpeechOptions(),
+    cloudProvider?: "openai" | "xai" | "openrouter"
+  ): Promise<string> {
+    const framed = encodeSpeechPcmRequest(pcm, options);
+    const endpoint = cloudProvider
+      ? `/api/voice/cloud/${encodeURIComponent(cloudProvider)}/transcribe`
+      : "/api/voice/transcribe";
+    const res = await this.fetchVoiceApi(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: new Blob([framed.slice().buffer])
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      throw new Error(`Voice transcribe failed (HTTP ${res.status}): ${detail.slice(0, 140)}`);
+    }
+    const body = (await res.json()) as { text?: string };
+    return (body.text ?? "").trim();
+  }
+
+  async postProcessVoiceTranscript(transcript: string, existingDraft = ""): Promise<string> {
+    const res = await this.fetchVoiceApi("/api/voice/post-process", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        options: {
+          speechCustomWords: [],
+          speechPostProcessingPrompt: { mode: "default", customInstructions: "" }
+        },
+        transcript,
+        draft: {
+          text: existingDraft,
+          selection: { start: existingDraft.length, end: existingDraft.length }
+        }
+      })
+    });
+    if (!res.ok) {
+      return transcript;
+    }
+    const body = (await res.json()) as { text?: string };
+    return typeof body.text === "string" && body.text.trim().length > 0
+      ? body.text.trim()
+      : transcript;
+  }
+
+  async openVoiceStream(
+    options: SpeechTranscriptionOptions,
+    callbacks: {
+      onUpdate: (committed: string, tentative: string) => void;
+      onError?: (message: string) => void;
+    }
+  ): Promise<VoiceStreamHandle> {
+    const origin = this.currentOrigin ?? this.readRuntimeState()?.origin;
+    if (!origin) {
+      throw new Error("T3 Code server is not running");
+    }
+    const ticket = await this.mintWebSocketTicket(origin, false, "media");
+    const wsOrigin = origin.replace(/^http/, "ws");
+    const wsUrl = `${wsOrigin}/ws/voice?wsTicket=${encodeURIComponent(ticket)}`;
+    const ws = new WebSocket(wsUrl);
+
+    let finishedResolve: ((text: string) => void) | null = null;
+    let finishedReject: ((err: Error) => void) | null = null;
+    let settled = false;
+
+    const readyPromise = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Voice stream ready timeout")), 15_000);
+      ws.addEventListener("open", () => {
+        ws.send(JSON.stringify({ type: "start", options }));
+      });
+      ws.addEventListener("error", () => {
+        clearTimeout(timer);
+        reject(new Error("Voice WebSocket connection error"));
+      });
+      ws.addEventListener("message", (event) => {
+        if (typeof event.data !== "string") return;
+        let msg: {
+          type?: string;
+          text?: string | { committed?: string; tentative?: string } | null;
+          message?: string;
+        };
+        try {
+          msg = JSON.parse(event.data) as typeof msg;
+        } catch {
+          return;
+        }
+        if (msg.type === "ready") {
+          clearTimeout(timer);
+          resolve();
+        } else if (msg.type === "update" && msg.text && typeof msg.text === "object") {
+          callbacks.onUpdate(msg.text.committed ?? "", msg.text.tentative ?? "");
+        } else if (msg.type === "finished") {
+          settled = true;
+          const finalText = typeof msg.text === "string" ? msg.text.trim() : "";
+          finishedResolve?.(finalText);
+        } else if (msg.type === "error") {
+          clearTimeout(timer);
+          const errMsg = msg.message || "Voice transcription error";
+          callbacks.onError?.(errMsg);
+          const err = new Error(errMsg);
+          reject(err);
+          if (!settled) {
+            settled = true;
+            finishedReject?.(err);
+          }
+        }
+      });
+      ws.addEventListener("close", () => {
+        clearTimeout(timer);
+        if (!settled) {
+          settled = true;
+          finishedReject?.(new Error("Voice stream closed before finishing"));
+        }
+      });
+    });
+
+    await readyPromise;
+
+    return {
+      sendChunk(pcm: Uint8Array): void {
+        if (ws.readyState === WebSocket.OPEN && pcm.byteLength > 0) {
+          ws.send(pcm);
+        }
+      },
+      finish(): Promise<string> {
+        return new Promise<string>((resolve, reject) => {
+          if (ws.readyState !== WebSocket.OPEN) {
+            reject(new Error("Voice stream already closed"));
+            return;
+          }
+          const timer = setTimeout(() => {
+            if (!settled) {
+              settled = true;
+              try {
+                ws.close();
+              } catch {
+                // ignore
+              }
+              reject(new Error("Voice finish timeout"));
+            }
+          }, 20_000);
+          finishedResolve = (text) => {
+            clearTimeout(timer);
+            resolve(text);
+          };
+          finishedReject = (err) => {
+            clearTimeout(timer);
+            reject(err);
+          };
+          ws.send(JSON.stringify({ type: "finish" }));
+        });
+      },
+      abort(): void {
+        settled = true;
+        try {
+          ws.close();
+        } catch {
+          // ignore
+        }
+      }
+    };
+  }
+}
+
+export interface VoiceStreamHandle {
+  sendChunk: (pcm: Uint8Array) => void;
+  finish: () => Promise<string>;
+  abort: () => void;
 }

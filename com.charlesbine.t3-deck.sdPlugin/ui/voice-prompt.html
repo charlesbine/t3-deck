@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>T3 Voice Prompt (STT)</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+        font-size: 12px;
+      }
+      body {
+        margin: 0;
+        padding: 12px;
+        background: #2d2d2d;
+        color: #e5e7eb;
+      }
+      .field {
+        margin-bottom: 12px;
+      }
+      label {
+        display: block;
+        margin-bottom: 4px;
+        font-size: 11px;
+        font-weight: 600;
+        color: #9ca3af;
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+      }
+      select {
+        width: 100%;
+        box-sizing: border-box;
+        background: #1f232b;
+        color: #f3f4f6;
+        border: 1px solid #3f4756;
+        border-radius: 6px;
+        padding: 6px 8px;
+        font: inherit;
+      }
+      .check-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 6px;
+        cursor: pointer;
+        text-transform: none;
+        letter-spacing: 0;
+        font-size: 12px;
+        color: #e5e7eb;
+      }
+      .check-row input {
+        width: auto;
+      }
+      .hint {
+        margin-top: 4px;
+        font-size: 11px;
+        color: #9ca3af;
+        line-height: 1.4;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="field">
+      <label for="triggerMode">Trigger Behavior</label>
+      <select id="triggerMode">
+        <option value="toggle">Tap to Toggle (Hold = instant Push-to-Talk)</option>
+        <option value="ptt">Push-to-Talk Only (Hold to record, release to stop)</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="sendMode">Delivery Mode (when thread is running)</label>
+      <select id="sendMode">
+        <option value="auto">Auto (steer active run, or send if idle)</option>
+        <option value="steer">Steer active run</option>
+        <option value="queue">Queue after active run</option>
+      </select>
+    </div>
+    <div class="field">
+      <label class="check-row">
+        <input id="autoSend" type="checkbox" />
+        <span>Auto-Send immediately when recording stops (walkie-talkie)</span>
+      </label>
+      <div class="hint">When unchecked (recommended), your transcript previews on the deck with SEND / APPEND / RE-RECORD buttons.</div>
+    </div>
+    <div class="field">
+      <label class="check-row">
+        <input id="usePostProcess" type="checkbox" />
+        <span>Run T3 Code transcript cleanup (/api/voice/post-process)</span>
+      </label>
+      <div class="hint">Streams mic audio directly into T3 Code's built-in STT engine (/ws/voice). Requires SoX or ffmpeg.</div>
+    </div>
+
+    <script>
+      let ws = null;
+      let uuid = null;
+      let currentSettings = {};
+
+      const triggerModeEl = document.getElementById("triggerMode");
+      const sendModeEl = document.getElementById("sendMode");
+      const autoSendEl = document.getElementById("autoSend");
+      const usePostProcessEl = document.getElementById("usePostProcess");
+
+      function syncInputs() {
+        triggerModeEl.value = currentSettings.triggerMode || "toggle";
+        sendModeEl.value = currentSettings.sendMode || "auto";
+        autoSendEl.checked = Boolean(currentSettings.autoSend);
+        usePostProcessEl.checked = Boolean(currentSettings.usePostProcess);
+      }
+
+      function saveSettings() {
+        currentSettings = {
+          triggerMode: triggerModeEl.value || "toggle",
+          sendMode: sendModeEl.value || "auto",
+          autoSend: Boolean(autoSendEl.checked),
+          usePostProcess: Boolean(usePostProcessEl.checked)
+        };
+        if (ws && ws.readyState === WebSocket.OPEN && uuid) {
+          ws.send(JSON.stringify({ event: "setSettings", context: uuid, payload: currentSettings }));
+        }
+      }
+
+      triggerModeEl.addEventListener("change", saveSettings);
+      sendModeEl.addEventListener("change", saveSettings);
+      autoSendEl.addEventListener("change", saveSettings);
+      usePostProcessEl.addEventListener("change", saveSettings);
+
+      window.connectElgatoStreamDeckSocket = function (inPort, inPropertyInspectorUUID, inRegisterEvent, _inInfo, inActionInfo) {
+        uuid = inPropertyInspectorUUID;
+        try {
+          const parsed = JSON.parse(inActionInfo);
+          currentSettings = (parsed && parsed.payload && parsed.payload.settings) || {};
+        } catch {}
+        syncInputs();
+
+        ws = new WebSocket("ws://127.0.0.1:" + inPort);
+        ws.onopen = function () {
+          ws.send(JSON.stringify({ event: inRegisterEvent, uuid: uuid }));
+        };
+        ws.onmessage = function (ev) {
+          try {
+            const msg = JSON.parse(ev.data);
+            if (msg.event === "didReceiveSettings" && msg.payload && msg.payload.settings) {
+              currentSettings = msg.payload.settings;
+              syncInputs();
+            }
+          } catch {}
+        };
+      };
+    </script>
+  </body>
+</html>

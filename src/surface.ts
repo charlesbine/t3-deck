@@ -33,6 +33,7 @@ import {
   renderThreadToolsPanoramicFrame,
   renderUsageDialCanvas,
   renderUsageKey,
+  renderVoicePanoramicFrame,
   slicePanoramicFrame,
   wrapLines,
   type PanoramicFrame
@@ -166,6 +167,19 @@ export interface SurfaceDispatchCallbacks {
   openThread: (threadId: string) => void;
   openUrl: (url: string) => void;
   resync: () => Promise<void>;
+  startVoice?: (
+    deviceId: string,
+    originSlot: number,
+    opts?: {
+      append?: boolean;
+      autoSend?: boolean;
+      sendMode?: "auto" | "steer" | "queue";
+      usePostProcess?: boolean;
+    }
+  ) => Promise<void>;
+  stopVoice?: (deviceId: string) => Promise<void>;
+  cancelVoice?: (deviceId: string) => void;
+  downloadVoiceModel?: (deviceId: string, modelId: string) => Promise<void>;
 }
 
 /**
@@ -191,7 +205,8 @@ export function usesVirtualTopBanner(geom: SurfaceGeometry, kind: DeckOverlay["k
     kind === "approval" ||
     kind === "question" ||
     kind === "prompts" ||
-    kind === "new-chat-builder"
+    kind === "new-chat-builder" ||
+    kind === "voice"
   );
 }
 
@@ -420,6 +435,73 @@ function renderTopInfoRowKey(
       return emptyOverlayTile();
     }
 
+    case "voice": {
+      const thread = store.getAllThreads().find((t) => t.id === ov.threadId) ?? store.getFocusedThread();
+      const proj = thread ? store.getProjectName(thread.projectId) : "T3";
+      const accent =
+        ov.phase === "listening"
+          ? "#F43F5E"
+          : ov.phase === "draft"
+            ? "#10B981"
+            : ov.phase === "missing-model"
+              ? "#F59E0B"
+              : ov.phase === "error"
+                ? "#FB7185"
+                : "#38BDF8";
+      const bgTop =
+        ov.phase === "listening"
+          ? "#2E0C1A"
+          : ov.phase === "draft"
+            ? "#0A281F"
+            : ov.phase === "missing-model"
+              ? "#2A1E08"
+              : "#0B2438";
+      const sec = Math.max(0, Math.floor(ov.durationSec));
+      const timer = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+      if (col === 0) {
+        const topLabel =
+          ov.phase === "listening"
+            ? `● REC ${timer}`
+            : ov.phase === "draft"
+              ? "VOICE DRAFT"
+              : ov.phase === "missing-model"
+                ? "NO MODEL"
+                : ov.phase === "downloading"
+                  ? "DOWNLOADING"
+                  : ov.phase === "error"
+                    ? "VOICE ERROR"
+                    : "T3 STT";
+        return renderInfoCardKey({
+          accent,
+          bgTop,
+          topLabel,
+          lines: wrapLines(thread?.title ?? "Focused Thread", 13, 3),
+          footer: proj.toUpperCase(),
+          glow: ov.phase === "listening" || ov.phase === "draft"
+        });
+      }
+      const bodyText =
+        ov.phase === "missing-model"
+          ? `${ov.modelName || "Parakeet 0.6B"} not downloaded yet. Tap DOWNLOAD below.`
+          : ov.phase === "downloading"
+            ? "Downloading T3 Code voice model…"
+            : ov.phase === "error"
+              ? ov.errorMessage || "Voice transcription failed."
+              : ov.phase === "draft"
+                ? ov.draftText || "(No speech detected — tap RE-RECORD)"
+                : [ov.committed, ov.tentative].filter(Boolean).join(" ").trim() ||
+                  "Listening via T3 Code built-in STT…";
+      const chunks = chunkTextForKeyCards(bodyText, 14, 3, Math.max(1, cols - 1));
+      const lines = chunks[col - 1];
+      if (!lines || lines.length === 0) return emptyOverlayTile();
+      return renderInfoCardKey({
+        accent,
+        bgTop,
+        topLabel: col === 1 ? (ov.phase === "draft" ? "TRANSCRIPT" : "CAPTIONS") : `(${col}/${chunks.length})`,
+        lines
+      });
+    }
+
     case "new-chat-builder": {
       const projects = store.getLaunchProjects();
       const proj = projects[ov.projectIndex] ?? projects[0];
@@ -630,6 +712,11 @@ export function getActivePanoramicFrame(
       const thread = store.getFocusedThread();
       const entry = thread ? store.getThreadModelEntry(thread) : null;
       return renderModeEffortPanoramicFrame(thread, entry);
+    }
+    case "voice": {
+      const thread = store.getAllThreads().find((t) => t.id === ov.threadId) ?? store.getFocusedThread();
+      const proj = thread ? store.getProjectName(thread.projectId) : "T3";
+      return renderVoicePanoramicFrame(ov, thread, proj);
     }
   }
 }
@@ -880,6 +967,234 @@ function renderApprovalActionSlot(store: T3Store, actionSlot: number, deviceId: 
   }
 }
 
+function renderCompactVoiceInfoCard(
+  ov: Extract<DeckOverlay, { kind: "voice" }>
+): string {
+  const sec = Math.max(0, Math.floor(ov.durationSec));
+  const timer = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+  const accent =
+    ov.phase === "listening"
+      ? "#F43F5E"
+      : ov.phase === "draft"
+        ? "#10B981"
+        : ov.phase === "missing-model"
+          ? "#F59E0B"
+          : ov.phase === "error"
+            ? "#FB7185"
+            : "#38BDF8";
+  const bgTop =
+    ov.phase === "listening"
+      ? "#2E0C1A"
+      : ov.phase === "draft"
+        ? "#0A281F"
+        : ov.phase === "missing-model"
+          ? "#2A1E08"
+          : "#0B2438";
+  const topLabel =
+    ov.phase === "listening"
+      ? `● REC ${timer}`
+      : ov.phase === "draft"
+        ? "VOICE DRAFT"
+        : ov.phase === "missing-model"
+          ? "NO MODEL"
+          : ov.phase === "downloading"
+            ? "DOWNLOADING"
+            : ov.phase === "error"
+              ? "ERROR"
+              : "T3 STT";
+  const text =
+    ov.phase === "missing-model"
+      ? `${ov.modelName || "Parakeet 0.6B"} missing`
+      : ov.phase === "downloading"
+        ? "Downloading model…"
+        : ov.phase === "error"
+          ? ov.errorMessage || "Voice failed"
+          : ov.phase === "draft"
+            ? ov.draftText || "(No speech)"
+            : [ov.committed, ov.tentative].filter(Boolean).join(" ").trim() || "Speak now…";
+  const lines = chunkTextForKeyCards(text, 14, 3, 1)[0] ?? [text];
+  return renderInfoCardKey({
+    accent,
+    bgTop,
+    topLabel,
+    lines,
+    footer: ov.phase === "draft" ? "TAP: OPEN T3" : undefined,
+    glow: ov.phase === "listening" || ov.phase === "draft"
+  });
+}
+
+function renderVoiceActionSlot(
+  store: T3Store,
+  ov: Extract<DeckOverlay, { kind: "voice" }>,
+  actionSlot: number
+): string {
+  const thread = store.getAllThreads().find((t) => t.id === ov.threadId) ?? store.getFocusedThread();
+  const isRunning = Boolean(thread && isThreadRunning(thread));
+  const hasDraft = ov.draftText.trim().length > 0;
+  const sec = Math.max(0, Math.floor(ov.durationSec));
+  const timer = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+
+  switch (actionSlot) {
+    case 0:
+      return renderOverlayActionKey({
+        topLabel: ov.phase === "listening" ? "ABORT" : "VOICE",
+        mainLabel: ov.phase === "listening" ? "CANCEL" : "BACK",
+        subLabel: ov.phase === "draft" ? "DISCARD" : "CLOSE",
+        accent: "#94A3B8",
+        bgTop: "#151C2B",
+        glyph: ov.phase === "listening" ? "cross" : "back"
+      });
+    case 1:
+      if (ov.phase === "listening") {
+        return renderOverlayActionKey({
+          topLabel: `● ${timer}`,
+          mainLabel: ov.autoSend ? "STOP & SEND" : "STOP",
+          subLabel: ov.autoSend ? "DISPATCH NOW" : "REVIEW DRAFT",
+          accent: "#F43F5E",
+          bgTop: "#3B0D18",
+          glyph: "stop",
+          glow: true
+        });
+      }
+      if (ov.phase === "draft") {
+        return renderOverlayActionKey({
+          topLabel: isRunning ? "STEER ACTIVE" : "DISPATCH",
+          mainLabel: isRunning ? "STEER" : "SEND",
+          subLabel: hasDraft ? "TO THREAD" : "EMPTY DRAFT",
+          accent: "#10B981",
+          bgTop: "#0A2D20",
+          glyph: "send",
+          glow: hasDraft,
+          disabled: !hasDraft
+        });
+      }
+      if (ov.phase === "missing-model") {
+        return renderOverlayActionKey({
+          topLabel: "T3 STT",
+          mainLabel: "DOWNLOAD",
+          subLabel: "INSTALL MODEL",
+          accent: "#F59E0B",
+          bgTop: "#331D06",
+          glyph: "sync",
+          glow: true
+        });
+      }
+      if (ov.phase === "error") {
+        return renderOverlayActionKey({
+          topLabel: "VOICE",
+          mainLabel: "RETRY",
+          subLabel: "SPEAK AGAIN",
+          accent: "#F43F5E",
+          bgTop: "#2E0F1E",
+          glyph: "mic",
+          glow: true
+        });
+      }
+      return renderOverlayActionKey({
+        topLabel: "T3 STT",
+        mainLabel: ov.phase === "downloading" ? "DOWNLOADING" : "WORKING…",
+        subLabel: "PLEASE WAIT",
+        accent: "#38BDF8",
+        bgTop: "#0B243E",
+        glyph: "sync",
+        disabled: true
+      });
+    case 2:
+      if (ov.phase === "listening") {
+        return renderOverlayActionKey({
+          topLabel: "VOICE",
+          mainLabel: "RESTART",
+          subLabel: "CLEAR & REC",
+          accent: "#F59E0B",
+          bgTop: "#241706",
+          glyph: "mic"
+        });
+      }
+      if (ov.phase === "draft") {
+        return isRunning
+          ? renderOverlayActionKey({
+              topLabel: "AFTER RUN",
+              mainLabel: "QUEUE",
+              subLabel: "NEXT TURN",
+              accent: "#818CF8",
+              bgTop: "#1A193B",
+              glyph: "clock",
+              disabled: !hasDraft
+            })
+          : renderOverlayActionKey({
+              topLabel: "DICTATE MORE",
+              mainLabel: "APPEND",
+              subLabel: "ADD TO DRAFT",
+              accent: "#22D3EE",
+              bgTop: "#082936",
+              glyph: "mic"
+            });
+      }
+      return renderOverlayActionKey({
+        topLabel: "INSPECT",
+        mainLabel: "OPEN T3",
+        subLabel: "VOICE SETTINGS",
+        accent: "#38BDF8",
+        bgTop: "#0B243E",
+        glyph: "open"
+      });
+    case 3:
+      if (ov.phase === "draft") {
+        return renderOverlayActionKey({
+          topLabel: "REDO",
+          mainLabel: "RE-RECORD",
+          subLabel: "START FRESH",
+          accent: "#F43F5E",
+          bgTop: "#2E0F1E",
+          glyph: "mic"
+        });
+      }
+      return renderOverlayActionKey({
+        topLabel: "ON STOP",
+        mainLabel: ov.autoSend ? "AUTO-SEND" : "REVIEW",
+        subLabel: "TAP TO TOGGLE",
+        accent: ov.autoSend ? "#10B981" : "#38BDF8",
+        bgTop: ov.autoSend ? "#0A281F" : "#0B243E",
+        glyph: "spark"
+      });
+    case 4:
+      return renderOverlayActionKey({
+        topLabel: "T3 CLEANUP",
+        mainLabel: ov.usePostProcess ? "POLISH ON" : "RAW STT",
+        subLabel: "POST-PROCESS",
+        accent: ov.usePostProcess ? "#C084FC" : "#94A3B8",
+        bgTop: ov.usePostProcess ? "#271040" : "#151C2B",
+        glyph: "spark"
+      });
+    case 5:
+      if (ov.phase === "draft" && isRunning) {
+        return renderOverlayActionKey({
+          topLabel: "DICTATE MORE",
+          mainLabel: "APPEND",
+          subLabel: "ADD TO DRAFT",
+          accent: "#22D3EE",
+          bgTop: "#082936",
+          glyph: "mic"
+        });
+      }
+      return emptyOverlayTile();
+    case 6:
+      return emptyOverlayTile();
+    case 7:
+      return renderOverlayActionKey({
+        topLabel: "THREAD",
+        mainLabel: "OPEN T3",
+        subLabel: "SHOW IN APP",
+        accent: "#38BDF8",
+        bgTop: "#0B243E",
+        glyph: "open",
+        disabled: !thread
+      });
+    default:
+      return emptyOverlayTile();
+  }
+}
+
 /** Renders the 144x144 key SVG for `(col, row)` when an overlay is active on `geom`. */
 export function renderOverlayKeySvg(
   store: T3Store,
@@ -1069,6 +1384,20 @@ function renderSparseMixedOverlayKey(
     });
   }
 
+  if (ov.kind === "voice") {
+    if (localCount === 1) {
+      return renderVoiceActionSlot(store, ov, 1);
+    }
+    if (localCount === 2) {
+      return renderVoiceActionSlot(store, ov, localIdx === 0 ? 1 : 0);
+    }
+    if (localIdx === 3) return renderCompactVoiceInfoCard(ov);
+    if (localIdx === 4) return renderVoiceActionSlot(store, ov, 3);
+    if (localIdx === 5) return renderVoiceActionSlot(store, ov, 4);
+    if (localIdx === 6) return renderVoiceActionSlot(store, ov, 7);
+    return renderVoiceActionSlot(store, ov, localIdx);
+  }
+
   // Dynamic submenus on mixed pages: treat the visible T3 keys as a virtual 1xN strip!
   const virtualGeom: SurfaceGeometry = {
     deviceId,
@@ -1106,6 +1435,14 @@ function renderOverlayKeySvgInternal(
       ? Math.min(bodyCount - 1, effectiveOriginSlot - geom.cols)
       : 0
     : Math.min(keyCount - 1, effectiveOriginSlot);
+
+  // ---- Native T3 Voice STT Overlay ----
+  if (ov.kind === "voice") {
+    if (geom.stripCols === 0 && !useBanner && slot === 3) {
+      return renderCompactVoiceInfoCard(ov);
+    }
+    return renderVoiceActionSlot(store, ov, bodySlot);
+  }
 
   // ---- Approval Inspector ----
   if (ov.kind === "approval") {
@@ -1689,6 +2026,18 @@ function renderOverlayKeySvgInternal(
         disabled: !thread
       });
     }
+    if (idx === 2) {
+      return renderOverlayActionKey({
+        topLabel: "T3 STT",
+        mainLabel: "VOICE",
+        subLabel: "SPEAK PROMPT",
+        accent: "#F43F5E",
+        bgTop: "#2E0F1E",
+        glyph: "mic",
+        glow: Boolean(thread),
+        disabled: !thread
+      });
+    }
     const preset = QUICK_PROMPT_PRESETS[idx - 2];
     if (preset) {
       return renderOverlayActionKey({
@@ -2038,6 +2387,46 @@ async function handleSparseMixedOverlayKeyPress(
     return true;
   }
 
+  if (ov.kind === "voice") {
+    if (localCount === 1) {
+      if (isLongPress) {
+        cb.cancelVoice?.(deviceId);
+        store.closeOverlay(deviceId);
+      } else {
+        await handleVoiceActionSlot(store, ov, 1, cb, deviceId);
+      }
+      return true;
+    }
+    if (localCount === 2) {
+      if (localIdx === 0) {
+        await handleVoiceActionSlot(store, ov, 1, cb, deviceId);
+      } else if (isLongPress && ov.phase === "draft") {
+        await handleVoiceActionSlot(store, ov, 3, cb, deviceId);
+      } else {
+        await handleVoiceActionSlot(store, ov, 0, cb, deviceId);
+      }
+      return true;
+    }
+    if (localIdx === 3) {
+      if (ov.threadId) cb.openThread(ov.threadId);
+      return true;
+    }
+    if (localIdx === 4) {
+      await handleVoiceActionSlot(store, ov, 3, cb, deviceId);
+      return true;
+    }
+    if (localIdx === 5) {
+      await handleVoiceActionSlot(store, ov, 4, cb, deviceId);
+      return true;
+    }
+    if (localIdx === 6) {
+      await handleVoiceActionSlot(store, ov, 7, cb, deviceId);
+      return true;
+    }
+    await handleVoiceActionSlot(store, ov, localIdx, cb, deviceId);
+    return true;
+  }
+
   const virtualGeom: SurfaceGeometry = {
     deviceId,
     deviceType: 9,
@@ -2055,6 +2444,111 @@ async function handleSparseMixedOverlayKeyPress(
     virtualGeom,
     originLocalIdx
   );
+}
+
+async function handleVoiceActionSlot(
+  store: T3Store,
+  ov: Extract<DeckOverlay, { kind: "voice" }>,
+  actionSlot: number,
+  cb: SurfaceDispatchCallbacks,
+  deviceId: string
+): Promise<boolean> {
+  const thread = store.getAllThreads().find((t) => t.id === ov.threadId) ?? store.getFocusedThread();
+  const isRunning = Boolean(thread && isThreadRunning(thread));
+  const draft = ov.draftText.trim();
+
+  switch (actionSlot) {
+    case 0:
+      cb.cancelVoice?.(deviceId);
+      store.closeOverlay(deviceId);
+      return true;
+    case 1:
+      if (ov.phase === "listening") {
+        await cb.stopVoice?.(deviceId);
+        return true;
+      }
+      if (ov.phase === "draft") {
+        if (!draft || !thread) return true;
+        store.updateVoiceOverlay(deviceId, { phase: "sending" });
+        await cb.sendPrompt(thread.id, draft, ov.sendMode);
+        store.setToast("voice", isRunning ? "STEERED" : "VOICE SENT", "#10B981", 1200);
+        store.closeOverlay(deviceId);
+        return true;
+      }
+      if (ov.phase === "missing-model") {
+        const modelId = ov.modelId || "handy-computer/parakeet-unified-en-0.6b-gguf";
+        await cb.downloadVoiceModel?.(deviceId, modelId);
+        return true;
+      }
+      if (ov.phase === "error") {
+        await cb.startVoice?.(deviceId, ov.originSlot, {
+          autoSend: ov.autoSend,
+          sendMode: ov.sendMode,
+          usePostProcess: ov.usePostProcess
+        });
+        return true;
+      }
+      return true;
+    case 2:
+      if (ov.phase === "listening") {
+        cb.cancelVoice?.(deviceId);
+        await cb.startVoice?.(deviceId, ov.originSlot, {
+          autoSend: ov.autoSend,
+          sendMode: ov.sendMode,
+          usePostProcess: ov.usePostProcess
+        });
+        return true;
+      }
+      if (ov.phase === "draft") {
+        if (isRunning) {
+          if (!draft || !thread) return true;
+          store.updateVoiceOverlay(deviceId, { phase: "sending" });
+          await cb.sendPrompt(thread.id, draft, "queue");
+          store.setToast("voice", "QUEUED", "#818CF8", 1200);
+          store.closeOverlay(deviceId);
+          return true;
+        }
+        await cb.startVoice?.(deviceId, ov.originSlot, {
+          append: true,
+          autoSend: ov.autoSend,
+          sendMode: ov.sendMode,
+          usePostProcess: ov.usePostProcess
+        });
+        return true;
+      }
+      if (thread) cb.openThread(thread.id);
+      return true;
+    case 3:
+      if (ov.phase === "draft") {
+        await cb.startVoice?.(deviceId, ov.originSlot, {
+          append: false,
+          autoSend: ov.autoSend,
+          sendMode: ov.sendMode,
+          usePostProcess: ov.usePostProcess
+        });
+        return true;
+      }
+      store.updateVoiceOverlay(deviceId, { autoSend: !ov.autoSend });
+      return true;
+    case 4:
+      store.updateVoiceOverlay(deviceId, { usePostProcess: !ov.usePostProcess });
+      return true;
+    case 5:
+      if (ov.phase === "draft" && isRunning) {
+        await cb.startVoice?.(deviceId, ov.originSlot, {
+          append: true,
+          autoSend: ov.autoSend,
+          sendMode: ov.sendMode,
+          usePostProcess: ov.usePostProcess
+        });
+      }
+      return true;
+    case 7:
+      if (thread) cb.openThread(thread.id);
+      return true;
+    default:
+      return true;
+  }
 }
 
 async function handleOverlayKeyPressInternal(
@@ -2079,6 +2573,8 @@ async function handleOverlayKeyPressInternal(
     } else if (ov.kind === "question") {
       const { item } = store.getActiveOverlayQuestion(geom.deviceId);
       if (item) cb.openThread(item.threadId);
+    } else if (ov.kind === "voice") {
+      if (ov.threadId) cb.openThread(ov.threadId);
     } else if (ov.kind === "new-chat-builder") {
       if (col === 0) {
         store.stepNewChatBuilderDial(0, 1, geom.deviceId);
@@ -2121,6 +2617,14 @@ async function handleOverlayKeyPressInternal(
       ? Math.min(bodyCount - 1, effectiveOriginSlot - geom.cols)
       : 0
     : Math.min(keyCount - 1, effectiveOriginSlot);
+
+  if (ov.kind === "voice") {
+    if (geom.stripCols === 0 && !useBanner && slot === 3) {
+      if (ov.threadId) cb.openThread(ov.threadId);
+      return true;
+    }
+    return handleVoiceActionSlot(store, ov, bodySlot, cb, geom.deviceId);
+  }
 
   if (ov.kind === "approval") {
     const { item } = store.getActiveOverlayApproval(geom.deviceId);
@@ -2598,6 +3102,10 @@ async function handleOverlayKeyPressInternal(
       store.closeOverlay(geom.deviceId);
       return true;
     }
+    if (idx === 2) {
+      await cb.startVoice?.(geom.deviceId, slot);
+      return true;
+    }
     const preset = QUICK_PROMPT_PRESETS[idx - 2];
     if (preset) {
       await cb.sendPrompt(thread.id, preset.prompt, "auto");
@@ -2781,6 +3289,13 @@ export async function handleOverlayDialTapOrPress(
       }
     }
     store.closeOverlay(geom.deviceId);
+    return true;
+  }
+
+  if (ov.kind === "voice") {
+    if (ov.phase === "listening" || ov.phase === "draft" || ov.phase === "missing-model" || ov.phase === "error") {
+      await handleVoiceActionSlot(store, ov, 1, cb, geom.deviceId);
+    }
     return true;
   }
 

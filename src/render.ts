@@ -1495,6 +1495,7 @@ export type OverlayKeyGlyph =
   | "branch"
   | "server"
   | "model"
+  | "mic"
   | "number";
 
 export function renderOverlayActionKey(opts: {
@@ -1581,6 +1582,11 @@ export function renderOverlayActionKey(opts: {
     case "model":
       iconSvg = `<rect x="50" y="43" width="44" height="38" rx="9" fill="${accent}" opacity="0.2" stroke="${accent}" stroke-width="2.5"/>
         <circle cx="72" cy="62" r="8" fill="${accent}"/>`;
+      break;
+    case "mic":
+      iconSvg = `<rect x="63" y="40" width="18" height="29" rx="9" fill="${accent}" opacity="0.28" stroke="${accent}" stroke-width="3"/>
+        <path d="M55 61a17 17 0 0 0 34 0" fill="none" stroke="${accent}" stroke-width="3.2" stroke-linecap="round"/>
+        <path d="M72 78v8M63 86h18" fill="none" stroke="${accent}" stroke-width="3.2" stroke-linecap="round"/>`;
       break;
     case "number":
       iconSvg = `<circle cx="72" cy="62" r="23" fill="${accent}" opacity="0.22" stroke="${accent}" stroke-width="2.5"/>
@@ -2054,4 +2060,225 @@ export function renderSnoozeDialCanvas(
     <text x="24" y="176" font-family="${FONT}" font-size="13" font-weight="700" fill="#64748B">TURN: PRESET · PRESS/TAP: APPLY</text>
   `
   );
+}
+
+// ============================================================
+// T3 NATIVE VOICE STT RENDERERS (KEY, DIAL & 1600x200 STRIP)
+// ============================================================
+
+function formatVoiceTimer(sec: number): string {
+  const s = Math.max(0, Math.floor(sec));
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return `${m}:${String(rem).padStart(2, "0")}`;
+}
+
+export function renderVoiceKey(
+  thread: ThreadShell | null,
+  connected: boolean,
+  triggerMode: "toggle" | "ptt" = "toggle",
+  toast?: ToastNotice
+): string {
+  if (toast) {
+    return keyShell(
+      toast.accent,
+      "#1F0D1B",
+      "#0A0710",
+      `<text x="72" y="76" text-anchor="middle" font-family="${FONT}" font-size="15" font-weight="800" fill="${toast.accent}">${escXml(truncate(toast.label, 12))}</text>`
+    );
+  }
+  const enabled = connected && Boolean(thread);
+  const accent = enabled ? "#F43F5E" : "#475569";
+  const sub = !connected
+    ? "OFFLINE"
+    : !thread
+      ? "NO THREAD"
+      : triggerMode === "ptt"
+        ? "HOLD TO TALK"
+        : "TAP OR HOLD";
+  return renderOverlayActionKey({
+    topLabel: "T3 VOICE",
+    mainLabel: "SPEAK",
+    subLabel: sub,
+    accent,
+    bgTop: enabled ? "#2E0F1E" : "#111622",
+    glyph: "mic",
+    glow: enabled,
+    disabled: !enabled
+  });
+}
+
+export function renderVoiceDialCanvas(
+  thread: ThreadShell | null,
+  projectName: string,
+  connected: boolean,
+  autoSend: boolean,
+  toast?: ToastNotice
+): string {
+  if (toast) {
+    return dialShell(
+      toast.accent,
+      "#290F1E",
+      "#080C14",
+      `<text x="200" y="108" text-anchor="middle" font-family="${FONT}" font-size="28" font-weight="800" fill="${toast.accent}">${escXml(truncate(toast.label, 20))}</text>`
+    );
+  }
+  const accent = connected && thread ? "#F43F5E" : "#64748B";
+  return dialShell(
+    accent,
+    connected && thread ? "#2B0F1E" : "#121824",
+    "#080C14",
+    `
+    <text x="24" y="38" font-family="${FONT}" font-size="16" font-weight="800" fill="${accent}" letter-spacing="0.8">T3 NATIVE VOICE</text>
+    <text x="376" y="38" text-anchor="end" font-family="${FONT}" font-size="14" font-weight="700" fill="#FDA4AF">${autoSend ? "AUTO-SEND" : "DRAFT"}</text>
+    <text x="24" y="96" font-family="${FONT}" font-size="30" font-weight="800" fill="#FFFFFF">${connected && thread ? "PRESS TO SPEAK" : "OFFLINE"}</text>
+    <text x="24" y="134" font-family="${FONT}" font-size="16" font-weight="600" fill="#CBD5E1">${thread ? escXml(truncate(`${projectName}: ${thread.title}`, 30)) : "Focus a thread to dictate"}</text>
+    <text x="24" y="176" font-family="${FONT}" font-size="13" font-weight="700" fill="#94A3B8">PRESS OR TAP: START T3 STT</text>
+  `
+  );
+}
+
+export function renderVoicePanoramicFrame(
+  ov: Extract<import("./types.js").DeckOverlay, { kind: "voice" }>,
+  thread: ThreadShell | null,
+  projectName: string
+): PanoramicFrame {
+  const threadTitle = thread?.title || "Focused Thread";
+  const timerStr = formatVoiceTimer(ov.durationSec);
+
+  if (ov.phase === "missing-model") {
+    const modelLabel = ov.modelName || ov.modelId || "Parakeet Unified English 0.6B";
+    return {
+      accent: "#F59E0B",
+      bgTop: "#2A1E08",
+      bgBottom: "#0B0A08",
+      inner: `
+        <circle cx="44" cy="40" r="10" fill="#F59E0B"/>
+        <text x="68" y="48" font-family="${FONT}" font-size="22" font-weight="800" fill="#FBBF24" letter-spacing="0.8">T3 VOICE MODEL NOT DOWNLOADED</text>
+        <text x="1558" y="46" text-anchor="end" font-family="${MONO}" font-size="18" font-weight="700" fill="#94A3B8">T3 BUILT-IN STT</text>
+        <text x="36" y="106" font-family="${FONT}" font-size="28" font-weight="800" fill="#FFFFFF">${escXml(truncate(modelLabel, 48))}</text>
+        <text x="36" y="150" font-family="${FONT}" font-size="18" font-weight="600" fill="#CBD5E1">Tap DOWNLOAD MODEL above to install it directly in T3 Code (~700 MB, local Metal GPU).</text>
+      `
+    };
+  }
+
+  if (ov.phase === "downloading") {
+    const modelLabel = ov.modelName || ov.modelId || "T3 Voice Model";
+    return {
+      accent: "#38BDF8",
+      bgTop: "#0B2438",
+      bgBottom: "#070D14",
+      inner: `
+        <circle cx="44" cy="40" r="10" fill="#38BDF8"/>
+        <text x="68" y="48" font-family="${FONT}" font-size="22" font-weight="800" fill="#7DD3FC" letter-spacing="0.8">DOWNLOADING T3 VOICE MODEL…</text>
+        <text x="36" y="106" font-family="${FONT}" font-size="28" font-weight="800" fill="#FFFFFF">${escXml(truncate(modelLabel, 48))}</text>
+        <text x="36" y="150" font-family="${FONT}" font-size="18" font-weight="600" fill="#94A3B8">T3 Code is downloading the local STT model. Recording unlocks automatically when ready.</text>
+      `
+    };
+  }
+
+  if (ov.phase === "error") {
+    return {
+      accent: "#FB7185",
+      bgTop: "#2E0E17",
+      bgBottom: "#0B070B",
+      inner: `
+        <circle cx="44" cy="40" r="10" fill="#FB7185"/>
+        <text x="68" y="48" font-family="${FONT}" font-size="22" font-weight="800" fill="#FDA4AF" letter-spacing="0.8">VOICE ERROR</text>
+        <text x="36" y="108" font-family="${FONT}" font-size="24" font-weight="700" fill="#FFFFFF">${escXml(truncate(ov.errorMessage || "Unable to transcribe audio.", 80))}</text>
+        <text x="36" y="154" font-family="${FONT}" font-size="17" font-weight="600" fill="#94A3B8">Tap RETRY to try again or BACK to return to Mission Control.</text>
+      `
+    };
+  }
+
+  if (ov.phase === "listening") {
+    // 16-bar live VU waveform meter driven by real mic RMS level
+    const bars: string[] = [];
+    const barCount = 16;
+    const baseLevel = Math.max(0.08, Math.min(1, ov.level));
+    for (let i = 0; i < barCount; i++) {
+      const wave = 0.45 + 0.55 * Math.abs(Math.sin(i * 0.72 + ov.durationSec * 6.5));
+      const h = Math.max(10, Math.round(baseLevel * wave * 74));
+      const x = 36 + i * 21;
+      const y = 136 - Math.round(h / 2);
+      const fill = i % 3 === 0 ? "#FB7185" : "#F43F5E";
+      bars.push(`<rect x="${x}" y="${y}" width="13" height="${h}" rx="6" fill="${fill}" opacity="0.92"/>`);
+    }
+
+    const liveText = [ov.committed, ov.tentative].filter(Boolean).join(" ").trim();
+    const captionLines = liveText
+      ? wrapCodeLines(liveText, 54).slice(-3)
+      : ["Listening via T3 Code built-in STT…", "Speak naturally — tap STOP when done."];
+
+    const captionSvg = captionLines
+      .map((line, i) => {
+        const isLast = i === captionLines.length - 1;
+        const fill = !liveText ? "#94A3B8" : isLast && ov.tentative ? "#7DD3FC" : "#FFFFFF";
+        return `<text x="424" y="${66 + i * 34}" font-family="${FONT}" font-size="23" font-weight="${isLast ? 700 : 800}" fill="${fill}">${escXml(truncate(line, 56))}</text>`;
+      })
+      .join("\n");
+
+    return {
+      accent: "#F43F5E",
+      bgTop: "#2E0C1A",
+      bgBottom: "#0A0710",
+      inner: `
+        <circle cx="44" cy="36" r="10" fill="#F43F5E"/>
+        <text x="64" y="44" font-family="${FONT}" font-size="20" font-weight="800" fill="#FDA4AF" letter-spacing="0.8">LIVE VOICE · ${timerStr}</text>
+        <text x="36" y="76" font-family="${FONT}" font-size="16" font-weight="700" fill="#CBD5E1">${escXml(truncate(`${projectName}: ${threadTitle}`, 28))}</text>
+        ${bars.join("\n")}
+        <rect x="404" y="20" width="1172" height="160" rx="12" fill="#0B0F1A" stroke="#F43F5E" stroke-opacity="0.45" stroke-width="1.5"/>
+        ${captionSvg}
+        <text x="1556" y="168" text-anchor="end" font-family="${FONT}" font-size="14" font-weight="800" fill="#FDA4AF">${ov.autoSend ? "STOP → AUTO-SEND" : "STOP → REVIEW DRAFT"}</text>
+      `
+    };
+  }
+
+  if (ov.phase === "transcribing" || ov.phase === "sending") {
+    const label = ov.phase === "sending" ? "DISPATCHING PROMPT TO T3…" : "TRANSCRIBING WITH T3 STT…";
+    const preview = (ov.draftText || ov.committed || ov.tentative).trim();
+    return {
+      accent: "#22D3EE",
+      bgTop: "#0B2433",
+      bgBottom: "#070C14",
+      inner: `
+        <circle cx="44" cy="40" r="10" fill="#22D3EE"/>
+        <text x="68" y="48" font-family="${FONT}" font-size="22" font-weight="800" fill="#67E8F9" letter-spacing="0.8">${label}</text>
+        <text x="1558" y="46" text-anchor="end" font-family="${MONO}" font-size="18" font-weight="700" fill="#94A3B8">${timerStr} AUDIO</text>
+        <text x="36" y="114" font-family="${FONT}" font-size="26" font-weight="700" fill="#FFFFFF">${escXml(truncate(preview || `Target: ${projectName} / ${threadTitle}`, 72))}</text>
+        <text x="36" y="156" font-family="${FONT}" font-size="16" font-weight="600" fill="#94A3B8">Using T3 Code's native speech engine</text>
+      `
+    };
+  }
+
+  // phase === "draft"
+  const draft = ov.draftText.trim();
+  const words = draft ? draft.split(/\s+/).length : 0;
+  const wrapped = wrapCodeLines(draft || "(No speech detected — tap RE-RECORD)", 58);
+  const maxOffset = Math.max(0, wrapped.length - 3);
+  const offset = Math.min(ov.scrollLine, maxOffset);
+  const visible = wrapped.slice(offset, offset + 3);
+  const isRunning = Boolean(thread && isThreadRunning(thread));
+  const actionHint = isRunning ? "TAP STEER OR QUEUE ABOVE" : "TAP SEND ABOVE";
+
+  return {
+    accent: "#10B981",
+    bgTop: "#09261E",
+    bgBottom: "#070E0D",
+    inner: `
+      <circle cx="44" cy="36" r="10" fill="#10B981"/>
+      <text x="64" y="44" font-family="${FONT}" font-size="20" font-weight="800" fill="#6EE7B7" letter-spacing="0.8">VOICE DRAFT READY</text>
+      <text x="36" y="88" font-family="${FONT}" font-size="22" font-weight="800" fill="#FFFFFF">${escXml(truncate(threadTitle, 22))}</text>
+      <text x="36" y="122" font-family="${FONT}" font-size="16" font-weight="700" fill="#94A3B8">${escXml(truncate(projectName, 24))}</text>
+      <text x="36" y="164" font-family="${MONO}" font-size="15" font-weight="700" fill="#34D399">${words} WORDS · ${timerStr}</text>
+      <rect x="404" y="20" width="1172" height="160" rx="12" fill="#0B1318" stroke="#10B981" stroke-opacity="0.45" stroke-width="1.5"/>
+      ${visible
+        .map(
+          (line, i) =>
+            `<text x="424" y="${64 + i * 36}" font-family="${FONT}" font-size="24" font-weight="700" fill="#FFFFFF">${escXml(truncate(line, 58))}</text>`
+        )
+        .join("\n")}
+      <text x="1556" y="168" text-anchor="end" font-family="${FONT}" font-size="14" font-weight="800" fill="#6EE7B7">${wrapped.length > 3 ? `TURN DIAL TO SCROLL · ${actionHint}` : actionHint}</text>
+    `
+  };
 }

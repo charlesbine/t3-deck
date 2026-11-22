@@ -19,9 +19,19 @@ import {
   usesVirtualTopBanner,
   type SurfaceDispatchCallbacks
 } from "./surface.js";
-import { renderThreadDialCanvas, renderUsageDialCanvas } from "./render.js";
+import {
+  renderThreadDialCanvas,
+  renderUsageDialCanvas,
+  renderVoiceDialCanvas,
+  renderVoiceKey
+} from "./render.js";
 import { T3Client } from "./t3-client.js";
 import type { ServerProvider, ThreadShell } from "./types.js";
+import {
+  defaultSpeechOptions,
+  encodeSpeechPcmRequest,
+  sanitizeFloat32Pcm
+} from "./voice.js";
 
 function makeThread(overrides: Partial<ThreadShell> = {}): ThreadShell {
   return {
@@ -1283,4 +1293,130 @@ test("mixed-page overlays map cleanly onto sparse T3 keys and keep XL / Plus XL 
   assert.equal(renderOverlayKeySvg(store, 4, 0, pxl), null);
   assert.equal(renderOverlayKeySvg(store, 0, 2, pxl), null);
   assert.ok(renderOverlayDialSvg(store, 5, pxl)!.includes("FLEET QUEUE"));
+});
+
+test("T3 native Voice PCM framing, Float32 sanitization, and Voice STT overlay across devices", async () => {
+  // 1. Float32 sanitization clamps NaN / out-of-range samples to [-1, 1]
+  const raw = new Float32Array([0.5, 2.5, -3.2, Number.NaN, -0.25]);
+  const { pcm, level } = sanitizeFloat32Pcm(new Uint8Array(raw.buffer));
+  assert.equal(pcm.byteLength, 20);
+  const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+  assert.equal(view.getFloat32(0, true), 0.5);
+  assert.equal(view.getFloat32(4, true), 1);
+  assert.equal(view.getFloat32(8, true), -1);
+  assert.equal(view.getFloat32(12, true), 0);
+  assert.equal(view.getFloat32(16, true), -0.25);
+  assert.ok(level > 0 && level <= 1);
+
+  // 2. Binary framing matches T3 Code decodeSpeechPcmRequest: [uint32LE(jsonLen)][utf8(json)][pcm]
+  const opts = defaultSpeechOptions({ speechLanguage: "en" });
+  const framed = encodeSpeechPcmRequest(pcm, opts);
+  const fView = new DataView(framed.buffer, framed.byteOffset, framed.byteLength);
+  const jsonLen = fView.getUint32(0, true);
+  const decodedOpts = JSON.parse(new TextDecoder().decode(framed.subarray(4, 4 + jsonLen)));
+  assert.equal(decodedOpts.speechLanguage, "en");
+  assert.equal(framed.byteLength, 4 + jsonLen + pcm.byteLength);
+
+  // 3. Full Voice overlay lifecycle + multi-device & mixed-page rendering
+  const store = new T3Store();
+  store.setConnection("connected");
+  const t = makeThread({ id: "t-v", title: "Voice Vibe Coding", status: "completed", activeRunId: null });
+  store.applyShellSnapshot([{ id: "p-1", title: "t3-deck", workspaceRoot: "/dev/t3-deck" }], [t], false);
+
+  const sent: Array<{ threadId: string; text: string; mode: string }> = [];
+  const actions: string[] = [];
+  const cb: SurfaceDispatchCallbacks = {
+    approveRequest: async () => {},
+    respondToUserInput: async () => {},
+    dismissUserInput: async () => {},
+    sendPrompt: async (threadId, text, mode) => {
+      sent.push({ threadId, text, mode });
+    },
+    snoozeThreadUntil: async () => {},
+    unsnoozeThread: async () => {},
+    settleToggle: async () => {},
+    pinToggle: async () => {},
+    markThreadUnread: async () => {},
+    interruptOrStop: async () => {},
+    createAndOpenThread: async () => {},
+    openThread: () => {},
+    openUrl: () => {},
+    resync: async () => {},
+    startVoice: async (devId, slot) => {
+      actions.push(`start:${devId}:${slot}`);
+      store.openVoiceOverlay(slot, devId);
+    },
+    stopVoice: async (devId) => {
+      actions.push(`stop:${devId}`);
+      store.updateVoiceOverlay(devId, {
+        phase: "draft",
+        draftText: "Refactor the auth middleware and add unit tests"
+      });
+    },
+    cancelVoice: (devId) => {
+      actions.push(`cancel:${devId}`);
+    },
+    downloadVoiceModel: async (devId, modelId) => {
+      actions.push(`download:${devId}:${modelId}`);
+      store.updateVoiceOverlay(devId, { phase: "downloading" });
+    }
+  };
+
+  // Base Voice key & dial SVG validity
+  const baseKeySvg = renderVoiceKey(t, true, "toggle");
+  const baseDialSvg = renderVoiceDialCanvas(t, "t3-deck", true, false);
+  assert.ok(baseKeySvg.includes("SPEAK") && baseKeySvg.startsWith("<svg "));
+  assert.ok(baseDialSvg.includes("T3 NATIVE VOICE") && baseDialSvg.startsWith("<svg "));
+
+  // Quick Prompts drawer slot idx=2 launches Voice STT!
+  store.openPromptsOverlay(5);
+  assert.ok(renderOverlayKeySvg(store, 2, 0)!.includes("VOICE"));
+  await handleOverlayKeyPress(store, 2, 0, false, cb);
+  assert.equal(store.getOverlay().kind, "voice");
+  assert.equal(actions[0], "start:default:2");
+
+  // Listening state renders live captions & VU bars on panoramic strip + STOP button
+  store.updateVoiceOverlay("default", {
+    level: 0.72,
+    durationSec: 4.2,
+    committed: "Refactor the auth",
+    tentative: "middleware"
+  });
+  const listenDeck = renderCompleteDeckSvgs(store);
+  assert.ok(listenDeck.keys[1]!.includes("STOP"));
+  assert.ok(listenDeck.dials[0]!.includes("LIVE VOICE"));
+  for (const svg of [...listenDeck.keys, ...listenDeck.dials]) {
+    assert.ok(!/&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[\da-fA-F]+);)/.test(svg), "valid XML escaping");
+  }
+
+  // Tap STOP -> transitions to draft -> SEND dispatches directly to thread!
+  await handleOverlayKeyPress(store, 1, 0, false, cb);
+  assert.equal(store.getOverlay().kind, "voice");
+  assert.equal((store.getOverlay() as Extract<typeof store.overlay, { kind: "voice" }>).phase, "draft");
+  const draftDeck = renderCompleteDeckSvgs(store);
+  assert.ok(draftDeck.keys[1]!.includes("SEND"));
+  assert.ok(draftDeck.dials[0]!.includes("VOICE DRAFT READY"));
+  await handleOverlayKeyPress(store, 1, 0, false, cb);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0]!.text, "Refactor the auth middleware and add unit tests");
+  assert.equal(store.getOverlay().kind, "none");
+
+  // Missing-model state offers 1-tap DOWNLOAD right on the deck (including MK.2 Row 0 info cards & 2-key mixed page)
+  const mk2 = geometryFromDevice({ id: "dev-mk2-v", type: 0, size: { columns: 5, rows: 3 } });
+  store.openVoiceOverlay(5, mk2.deviceId, { phase: "missing-model" });
+  store.updateVoiceOverlay(mk2.deviceId, { modelId: "parakeet-0.6b", modelName: "Parakeet 0.6B" });
+  assert.ok(renderOverlayKeySvg(store, 0, 0, mk2)!.includes("NO MODEL"));
+  assert.ok(renderOverlayKeySvg(store, 1, 1, mk2)!.includes("DOWNLOAD"));
+  await handleOverlayKeyPress(store, 1, 1, false, cb, mk2);
+  assert.ok(actions.includes("download:dev-mk2-v:parakeet-0.6b"));
+
+  // 2-key mixed page: key 0 = STOP/SEND, key 1 = CANCEL
+  const mixed2 = {
+    ...geometryFromDevice({ id: "dev-mix2-v", type: 7, size: { columns: 4, rows: 2 } }),
+    activeKeySlots: [0, 5]
+  };
+  store.openVoiceOverlay(0, mixed2.deviceId);
+  assert.ok(renderOverlayKeySvg(store, 0, 0, mixed2)!.includes("STOP"));
+  assert.ok(renderOverlayKeySvg(store, 1, 1, mixed2)!.includes("CANCEL"));
+  assert.equal(renderOverlayKeySvg(store, 2, 0, mixed2), null);
 });

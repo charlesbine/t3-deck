@@ -398,6 +398,43 @@ export interface PromptSuggestion {
   text: string;
 }
 
+export interface VoiceStatusPayload {
+  supported: boolean;
+  state: string; // "ready" | "loaded" | "unloaded" | "missing-model" | "downloading" | ...
+  modelId?: string;
+  model?: string;
+  size?: number;
+  downloadProgress?: number;
+  supportsStreaming?: boolean;
+  supportsBufferedStreaming?: boolean;
+  languages?: string[];
+  acceleration?: string;
+}
+
+export interface VoiceCloudKeysPayload {
+  openai: boolean;
+  xai: boolean;
+  openrouter?: boolean;
+}
+
+export interface SpeechTranscriptionOptions {
+  speechLanguage: string;
+  speechTranslateToEnglish: boolean;
+  speechCustomWords: string[];
+  speechRemoveFillerWords: boolean;
+  speechCorrectionWord?: string;
+  speechSilenceFiltering: boolean;
+}
+
+export type VoiceOverlayPhase =
+  | "listening"
+  | "transcribing"
+  | "draft"
+  | "sending"
+  | "missing-model"
+  | "downloading"
+  | "error";
+
 export type DeckOverlay =
   | { kind: "none" }
   | { kind: "approval"; requestId: string | null; scrollLine: number; originSlot: number }
@@ -413,6 +450,25 @@ export type DeckOverlay =
   | { kind: "snooze"; originSlot: number; customMinutes: number | null }
   | { kind: "fleet"; page: number; originSlot: number }
   | { kind: "thread-tools"; originSlot: number }
+  | {
+      kind: "voice";
+      originSlot: number;
+      threadId: string;
+      phase: VoiceOverlayPhase;
+      startedAt: number;
+      durationSec: number;
+      level: number;
+      committed: string;
+      tentative: string;
+      draftText: string;
+      sendMode: "auto" | "steer" | "queue";
+      autoSend: boolean;
+      usePostProcess: boolean;
+      modelId?: string;
+      modelName?: string;
+      errorMessage?: string;
+      scrollLine: number;
+    }
   | {
       kind: "new-chat-builder";
       originSlot: number;

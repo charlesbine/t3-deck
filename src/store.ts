@@ -1855,6 +1855,54 @@ export class T3Store {
     return this.getFullModelCatalog();
   }
 
+  openVoiceOverlay(
+    originSlot = 5,
+    deviceId = "default",
+    opts: {
+      threadId?: string;
+      sendMode?: "auto" | "steer" | "queue";
+      autoSend?: boolean;
+      usePostProcess?: boolean;
+      existingDraft?: string;
+      phase?: Extract<DeckOverlay, { kind: "voice" }>["phase"];
+    } = {}
+  ): boolean {
+    const thread = opts.threadId
+      ? (this.threads.get(opts.threadId) ?? this.getFocusedThread())
+      : this.getFocusedThread();
+    if (!thread) return false;
+    this.focusedThreadId = thread.id;
+    const baseDraft = (opts.existingDraft ?? "").trim();
+    this.setOverlayFor(deviceId, {
+      kind: "voice",
+      originSlot,
+      threadId: thread.id,
+      phase: opts.phase ?? "listening",
+      startedAt: Date.now(),
+      durationSec: 0,
+      level: 0,
+      committed: baseDraft,
+      tentative: "",
+      draftText: baseDraft,
+      sendMode: opts.sendMode ?? "auto",
+      autoSend: opts.autoSend ?? false,
+      usePostProcess: opts.usePostProcess ?? false,
+      scrollLine: 0
+    });
+    this.emit();
+    return true;
+  }
+
+  updateVoiceOverlay(
+    deviceId: string,
+    patch: Partial<Omit<Extract<DeckOverlay, { kind: "voice" }>, "kind">>
+  ): void {
+    const ov = this.getOverlay(deviceId);
+    if (ov.kind !== "voice") return;
+    this.setOverlayFor(deviceId, { ...ov, ...patch });
+    this.emit();
+  }
+
   closeOverlay(deviceId = "default"): void {
     if (this.getOverlay(deviceId).kind === "none") return;
     this.setOverlayFor(deviceId, { kind: "none" });
@@ -1877,6 +1925,13 @@ export class T3Store {
       const next = queue[nextIdx]!;
       this.setOverlayFor(deviceId, { ...ov, requestId: next.requestId, scrollLine: 0 });
       this.focusedThreadId = next.threadId;
+      this.emit();
+      return;
+    }
+
+    if (ov.kind === "voice") {
+      const nextScroll = Math.max(0, ov.scrollLine + ticks);
+      this.setOverlayFor(deviceId, { ...ov, scrollLine: nextScroll });
       this.emit();
       return;
     }
@@ -1952,6 +2007,13 @@ export class T3Store {
   scrollOverlay(ticks: number, deviceId = "default", optionsPerPage = 4): void {
     const ov = this.getOverlay(deviceId);
     if (ov.kind === "approval") {
+      const nextScroll = Math.max(0, ov.scrollLine + ticks);
+      this.setOverlayFor(deviceId, { ...ov, scrollLine: nextScroll });
+      this.emit();
+      return;
+    }
+
+    if (ov.kind === "voice") {
       const nextScroll = Math.max(0, ov.scrollLine + ticks);
       this.setOverlayFor(deviceId, { ...ov, scrollLine: nextScroll });
       this.emit();
