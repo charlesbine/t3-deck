@@ -520,8 +520,49 @@ export class T3Store {
   private lastAppOpenedThreadId: string | null = null;
   private lastManualScrubAt = 0;
   usageIndex = 0;
+  promptDialIndex = 0;
+  snoozeDialIndex = 0;
   promptSuggestion: PromptSuggestion | null = null;
-  overlay: DeckOverlay = { kind: "none" };
+  private overlays = new Map<string, DeckOverlay>();
+
+  get overlay(): DeckOverlay {
+    return this.getOverlay("default");
+  }
+
+  set overlay(next: DeckOverlay) {
+    if (next.kind === "none") {
+      this.overlays.delete("default");
+    } else {
+      this.overlays.set("default", next);
+    }
+  }
+
+  getOverlay(deviceId = "default"): DeckOverlay {
+    return this.overlays.get(deviceId) ?? { kind: "none" };
+  }
+
+  private setOverlayFor(deviceId: string, next: DeckOverlay): void {
+    if (next.kind === "none") {
+      this.overlays.delete(deviceId);
+    } else {
+      this.overlays.set(deviceId, next);
+    }
+  }
+
+  stepPromptDial(ticks: number): number {
+    const total = 2 + QUICK_PROMPT_PRESETS.length;
+    this.promptDialIndex = (((this.promptDialIndex + ticks) % total) + total) % total;
+    this.emit();
+    return this.promptDialIndex;
+  }
+
+  stepSnoozeDial(ticks: number): number {
+    const presets = this.getResolvedSnoozePresets();
+    const total = Math.max(1, presets.length);
+    this.snoozeDialIndex = (((this.snoozeDialIndex + ticks) % total) + total) % total;
+    this.emit();
+    return this.snoozeDialIndex;
+  }
 
   /** While user is spinning the Model dial, holds the preview index before press-to-apply. */
   pendingModelIndex: number | null = null;
@@ -1475,83 +1516,124 @@ export class T3Store {
     });
   }
 
-  // ---- Panoramic Overlay / Submenu State Machine ----
+  // ---- Panoramic Overlay / Submenu State Machine (Per-Device) ----
 
-  getActiveOverlayApproval(): {
+  getActiveOverlayApproval(deviceId = "default"): {
     item: PendingApprovalItem | null;
     index: number;
     total: number;
   } {
     const queue = this.getPendingApprovalQueue();
     if (queue.length === 0) return { item: null, index: -1, total: 0 };
-    if (this.overlay.kind === "approval" && this.overlay.requestId) {
-      const targetId = this.overlay.requestId;
+    const ov = this.getOverlay(deviceId);
+    if (ov.kind === "approval" && ov.requestId) {
+      const targetId = ov.requestId;
       const idx = queue.findIndex((q) => q.requestId === targetId);
       if (idx >= 0) return { item: queue[idx]!, index: idx, total: queue.length };
     }
     return { item: queue[0]!, index: 0, total: queue.length };
   }
 
-  getActiveOverlayQuestion(): {
+  getActiveOverlayQuestion(deviceId = "default"): {
     item: PendingQuestionItem | null;
     index: number;
     total: number;
   } {
     const queue = this.getPendingQuestionQueue();
     if (queue.length === 0) return { item: null, index: -1, total: 0 };
-    if (this.overlay.kind === "question" && this.overlay.requestId) {
-      const targetId = this.overlay.requestId;
+    const ov = this.getOverlay(deviceId);
+    if (ov.kind === "question" && ov.requestId) {
+      const targetId = ov.requestId;
       const idx = queue.findIndex((q) => q.requestId === targetId);
       if (idx >= 0) return { item: queue[idx]!, index: idx, total: queue.length };
     }
     return { item: queue[0]!, index: 0, total: queue.length };
   }
 
-  openApprovalOverlay(preferredThreadId?: string, originSlot = 1): boolean {
+  openApprovalOverlay(preferredThreadId?: string, originSlot = 1, deviceId = "default"): boolean {
     const queue = this.getPendingApprovalQueue();
     if (queue.length === 0) return false;
     const focusedId = preferredThreadId ?? this.getFocusedThread()?.id;
     const match = focusedId ? queue.find((q) => q.threadId === focusedId) : undefined;
     const target = match ?? queue[0]!;
-    this.overlay = { kind: "approval", requestId: target.requestId, scrollLine: 0, originSlot };
+    this.setOverlayFor(deviceId, {
+      kind: "approval",
+      requestId: target.requestId,
+      scrollLine: 0,
+      originSlot
+    });
     this.focusedThreadId = target.threadId;
     this.emit();
     return true;
   }
 
-  openQuestionOverlay(preferredThreadId?: string, originSlot = 1): boolean {
+  openQuestionOverlay(preferredThreadId?: string, originSlot = 1, deviceId = "default"): boolean {
     const queue = this.getPendingQuestionQueue();
     if (queue.length === 0) return false;
     const focusedId = preferredThreadId ?? this.getFocusedThread()?.id;
     const match = focusedId ? queue.find((q) => q.threadId === focusedId) : undefined;
     const target = match ?? queue[0]!;
-    this.overlay = {
+    this.setOverlayFor(deviceId, {
       kind: "question",
       requestId: target.requestId,
       questionIndex: 0,
       optionPage: 0,
       selectedByQuestionId: {},
       originSlot
-    };
+    });
     this.focusedThreadId = target.threadId;
     this.emit();
     return true;
   }
 
-  openPromptsOverlay(originSlot = 5): void {
-    this.overlay = { kind: "prompts", originSlot, selectedIndex: 0 };
+  openPromptsOverlay(originSlot = 5, deviceId = "default"): void {
+    this.setOverlayFor(deviceId, { kind: "prompts", originSlot, selectedIndex: 0 });
     this.emit();
   }
 
-  openSnoozeOverlay(originSlot = 7): void {
-    this.overlay = { kind: "snooze", originSlot, customMinutes: null };
+  openSnoozeOverlay(originSlot = 7, deviceId = "default"): void {
+    this.setOverlayFor(deviceId, { kind: "snooze", originSlot, customMinutes: null });
+    this.emit();
+  }
+
+  openModelPickerOverlay(originSlot = 1, deviceId = "default"): void {
+    this.setOverlayFor(deviceId, {
+      kind: "model-picker",
+      originSlot,
+      page: 0,
+      scope: this.getEffectiveModelScope()
+    });
+    this.emit();
+  }
+
+  toggleModelPickerScope(deviceId = "default"): void {
+    const ov = this.getOverlay(deviceId);
+    if (ov.kind !== "model-picker") return;
+    const nextScope: ModelCatalogScope = ov.scope === "favorites" ? "all" : "favorites";
+    this.setOverlayFor(deviceId, { ...ov, scope: nextScope, page: 0 });
+    this.emit();
+  }
+
+  getModelPickerCatalog(deviceId = "default"): ModelCatalogEntry[] {
+    const ov = this.getOverlay(deviceId);
+    if (ov.kind !== "model-picker") return this.getModelCatalog();
+    if (ov.scope === "favorites") {
+      const favs = this.getFavoriteModelCatalog();
+      return favs.length > 0 ? favs : this.getFullModelCatalog();
+    }
+    return this.getFullModelCatalog();
+  }
+
+  openModeEffortOverlay(originSlot = 2, deviceId = "default"): void {
+    this.setOverlayFor(deviceId, { kind: "mode-effort", originSlot });
     this.emit();
   }
 
   openNewChatBuilderOverlay(
     originSlot = 4,
     keyMode: "project" | "environment" | "model" = "project",
-    interactionMode: ProviderInteractionMode = "default"
+    interactionMode: ProviderInteractionMode = "default",
+    deviceId = "default"
   ): void {
     const projects = this.getLaunchProjects();
     const focused = this.getFocusedThread();
@@ -1573,7 +1655,7 @@ export class T3Store {
       : 0;
     const wsMode = projects[projIdx]?.defaultThreadEnvMode === "worktree" ? "worktree" : "local";
 
-    this.overlay = {
+    this.setOverlayFor(deviceId, {
       kind: "new-chat-builder",
       originSlot,
       projectIndex: projIdx,
@@ -1582,132 +1664,142 @@ export class T3Store {
       workspaceMode: wsMode,
       interactionMode,
       keyMode
-    };
+    });
     this.emit();
   }
 
-  getNewChatBuilderCatalog(): ModelCatalogEntry[] {
-    if (this.overlay.kind !== "new-chat-builder") return this.getModelCatalog();
-    if (this.overlay.modelScope === "favorites") {
+  getNewChatBuilderCatalog(deviceId = "default"): ModelCatalogEntry[] {
+    const ov = this.getOverlay(deviceId);
+    if (ov.kind !== "new-chat-builder") return this.getModelCatalog();
+    if (ov.modelScope === "favorites") {
       const favs = this.getFavoriteModelCatalog();
       return favs.length > 0 ? favs : this.getFullModelCatalog();
     }
     return this.getFullModelCatalog();
   }
 
-  stepNewChatBuilderDial(col: number, ticks: number): void {
-    if (this.overlay.kind !== "new-chat-builder") return;
+  stepNewChatBuilderDial(col: number, ticks: number, deviceId = "default"): void {
+    const ov = this.getOverlay(deviceId);
+    if (ov.kind !== "new-chat-builder") return;
     if (col === 0) {
       const projects = this.getLaunchProjects();
       if (projects.length === 0) return;
-      const next = (((this.overlay.projectIndex + ticks) % projects.length) + projects.length) % projects.length;
+      const next = (((ov.projectIndex + ticks) % projects.length) + projects.length) % projects.length;
       const proj = projects[next]!;
-      const wsMode = proj.defaultThreadEnvMode === "worktree" ? "worktree" : this.overlay.workspaceMode;
-      this.overlay = { ...this.overlay, projectIndex: next, workspaceMode: wsMode };
+      const wsMode = proj.defaultThreadEnvMode === "worktree" ? "worktree" : ov.workspaceMode;
+      this.setOverlayFor(deviceId, { ...ov, projectIndex: next, workspaceMode: wsMode });
       this.emit();
       return;
     }
     if (col === 1) {
-      const catalog = this.getNewChatBuilderCatalog();
+      const catalog = this.getNewChatBuilderCatalog(deviceId);
       if (catalog.length === 0) return;
-      const next = (((this.overlay.modelIndex + ticks) % catalog.length) + catalog.length) % catalog.length;
-      this.overlay = { ...this.overlay, modelIndex: next };
+      const next = (((ov.modelIndex + ticks) % catalog.length) + catalog.length) % catalog.length;
+      this.setOverlayFor(deviceId, { ...ov, modelIndex: next });
       this.emit();
       return;
     }
     if (col === 2) {
       const modes: Array<"local" | "worktree" | "scratch"> = ["local", "worktree", "scratch"];
-      const cur = modes.indexOf(this.overlay.workspaceMode);
+      const cur = modes.indexOf(ov.workspaceMode);
       const next = modes[(((cur + ticks) % modes.length) + modes.length) % modes.length] ?? "local";
-      this.overlay = { ...this.overlay, workspaceMode: next };
+      this.setOverlayFor(deviceId, { ...ov, workspaceMode: next });
       this.emit();
       return;
     }
     if (col === 3) {
-      const nextMode: ProviderInteractionMode =
-        this.overlay.interactionMode === "plan" ? "default" : "plan";
-      this.overlay = { ...this.overlay, interactionMode: nextMode };
+      const nextMode: ProviderInteractionMode = ov.interactionMode === "plan" ? "default" : "plan";
+      this.setOverlayFor(deviceId, { ...ov, interactionMode: nextMode });
       this.emit();
     }
   }
 
-  toggleNewChatBuilderDial(col: number): void {
-    if (this.overlay.kind !== "new-chat-builder") return;
+  toggleNewChatBuilderDial(col: number, deviceId = "default"): void {
+    const ov = this.getOverlay(deviceId);
+    if (ov.kind !== "new-chat-builder") return;
     if (col === 1) {
-      const nextScope: ModelCatalogScope =
-        this.overlay.modelScope === "favorites" ? "all" : "favorites";
-      this.overlay = { ...this.overlay, modelScope: nextScope, modelIndex: 0 };
+      const nextScope: ModelCatalogScope = ov.modelScope === "favorites" ? "all" : "favorites";
+      this.setOverlayFor(deviceId, { ...ov, modelScope: nextScope, modelIndex: 0 });
       this.emit();
       return;
     }
     if (col === 2) {
-      const nextMode: ProviderInteractionMode =
-        this.overlay.interactionMode === "plan" ? "default" : "plan";
-      this.overlay = { ...this.overlay, interactionMode: nextMode };
+      const nextMode: ProviderInteractionMode = ov.interactionMode === "plan" ? "default" : "plan";
+      this.setOverlayFor(deviceId, { ...ov, interactionMode: nextMode });
       this.emit();
     }
   }
 
-  setNewChatBuilderProject(projectIndex: number): void {
-    if (this.overlay.kind !== "new-chat-builder") return;
-    this.overlay = { ...this.overlay, projectIndex };
+  setNewChatBuilderProject(projectIndex: number, deviceId = "default"): void {
+    const ov = this.getOverlay(deviceId);
+    if (ov.kind !== "new-chat-builder") return;
+    this.setOverlayFor(deviceId, { ...ov, projectIndex });
     this.emit();
   }
 
-  setNewChatBuilderModel(modelIndex: number): void {
-    if (this.overlay.kind !== "new-chat-builder") return;
-    this.overlay = { ...this.overlay, modelIndex };
+  setNewChatBuilderModel(modelIndex: number, deviceId = "default"): void {
+    const ov = this.getOverlay(deviceId);
+    if (ov.kind !== "new-chat-builder") return;
+    this.setOverlayFor(deviceId, { ...ov, modelIndex });
     this.emit();
   }
 
-  setNewChatBuilderWorkspace(workspaceMode: "local" | "worktree" | "scratch"): void {
-    if (this.overlay.kind !== "new-chat-builder") return;
-    this.overlay = { ...this.overlay, workspaceMode };
+  setNewChatBuilderWorkspace(
+    workspaceMode: "local" | "worktree" | "scratch",
+    deviceId = "default"
+  ): void {
+    const ov = this.getOverlay(deviceId);
+    if (ov.kind !== "new-chat-builder") return;
+    this.setOverlayFor(deviceId, { ...ov, workspaceMode });
     this.emit();
   }
 
-  stepSnoozeCustom(ticks: number): void {
-    if (this.overlay.kind !== "snooze") return;
+  stepSnoozeCustom(ticks: number, deviceId = "default"): void {
+    const ov = this.getOverlay(deviceId);
+    if (ov.kind !== "snooze") return;
     const steps = [15, 30, 45, 60, 90, 120, 180, 240, 360, 480, 720, 1440];
-    const cur = this.overlay.customMinutes;
+    const cur = ov.customMinutes;
     let idx = cur === null ? (ticks >= 0 ? 0 : steps.length - 1) : steps.indexOf(cur);
     if (idx < 0) idx = 0;
     else if (cur !== null) idx = (((idx + ticks) % steps.length) + steps.length) % steps.length;
-    this.overlay = { ...this.overlay, customMinutes: steps[idx] ?? 60 };
+    this.setOverlayFor(deviceId, { ...ov, customMinutes: steps[idx] ?? 60 });
     this.emit();
   }
 
-  stepPromptSelection(ticks: number): void {
-    if (this.overlay.kind !== "prompts") return;
-    const total = 7; // 0: AI Next, 1: Implement Plan, 2..6: 5 presets
-    const next = (((this.overlay.selectedIndex + ticks) % total) + total) % total;
-    this.overlay = { ...this.overlay, selectedIndex: next };
+  stepPromptSelection(ticks: number, deviceId = "default"): void {
+    const ov = this.getOverlay(deviceId);
+    if (ov.kind !== "prompts") return;
+    const total = 2 + QUICK_PROMPT_PRESETS.length;
+    const next = (((ov.selectedIndex + ticks) % total) + total) % total;
+    this.setOverlayFor(deviceId, { ...ov, selectedIndex: next });
     this.emit();
   }
 
-  openFleetOverlay(originSlot = 0): void {
-    this.overlay = { kind: "fleet", page: 0, originSlot };
+  openFleetOverlay(originSlot = 0, deviceId = "default"): void {
+    this.setOverlayFor(deviceId, { kind: "fleet", page: 0, originSlot });
     this.emit();
   }
 
-  openThreadToolsOverlay(originSlot = 3): void {
-    this.overlay = { kind: "thread-tools", originSlot };
+  openThreadToolsOverlay(originSlot = 3, deviceId = "default"): void {
+    this.setOverlayFor(deviceId, { kind: "thread-tools", originSlot });
     this.emit();
   }
 
   openNewChatProjectOverlay(
     originSlot = 4,
-    interactionMode: ProviderInteractionMode = "default"
+    interactionMode: ProviderInteractionMode = "default",
+    deviceId = "default"
   ): void {
-    this.overlay = { kind: "new-chat-project", page: 0, originSlot, interactionMode };
+    this.setOverlayFor(deviceId, { kind: "new-chat-project", page: 0, originSlot, interactionMode });
     this.emit();
   }
 
   openNewChatEnvOverlay(
     originSlot = 4,
-    interactionMode: ProviderInteractionMode = "default"
+    interactionMode: ProviderInteractionMode = "default",
+    deviceId = "default"
   ): void {
-    this.overlay = { kind: "new-chat-env", page: 0, originSlot, interactionMode };
+    this.setOverlayFor(deviceId, { kind: "new-chat-env", page: 0, originSlot, interactionMode });
     this.emit();
   }
 
@@ -1719,9 +1811,11 @@ export class T3Store {
       parentOriginSlot?: number;
       workspaceMode?: "local" | "worktree" | "scratch";
       interactionMode?: ProviderInteractionMode;
+      deviceId?: string;
     } = {}
   ): void {
-    this.overlay = {
+    const deviceId = opts.deviceId ?? "default";
+    this.setOverlayFor(deviceId, {
       kind: "new-chat-model",
       projectId,
       workspaceMode: opts.workspaceMode ?? "local",
@@ -1731,129 +1825,146 @@ export class T3Store {
       originSlot: opts.originSlot ?? 4,
       parentKind: opts.parentKind ?? "new-chat-project",
       parentOriginSlot: opts.parentOriginSlot ?? 4
-    };
+    });
     this.emit();
   }
 
-  toggleNewChatModelScope(): void {
-    if (this.overlay.kind !== "new-chat-model") return;
-    const nextScope: ModelCatalogScope = this.overlay.scope === "favorites" ? "all" : "favorites";
-    this.overlay = { ...this.overlay, scope: nextScope, page: 0 };
+  toggleNewChatModelScope(deviceId = "default"): void {
+    const ov = this.getOverlay(deviceId);
+    if (ov.kind !== "new-chat-model") return;
+    const nextScope: ModelCatalogScope = ov.scope === "favorites" ? "all" : "favorites";
+    this.setOverlayFor(deviceId, { ...ov, scope: nextScope, page: 0 });
     this.emit();
   }
 
-  toggleNewChatInteractionMode(): void {
-    if (this.overlay.kind !== "new-chat-model") return;
-    const nextMode = this.overlay.interactionMode === "plan" ? "default" : "plan";
-    this.overlay = { ...this.overlay, interactionMode: nextMode };
+  toggleNewChatInteractionMode(deviceId = "default"): void {
+    const ov = this.getOverlay(deviceId);
+    if (ov.kind !== "new-chat-model") return;
+    const nextMode = ov.interactionMode === "plan" ? "default" : "plan";
+    this.setOverlayFor(deviceId, { ...ov, interactionMode: nextMode });
     this.emit();
   }
 
-  getNewChatModelCatalog(): ModelCatalogEntry[] {
-    if (this.overlay.kind !== "new-chat-model") return this.getModelCatalog();
-    if (this.overlay.scope === "favorites") {
+  getNewChatModelCatalog(deviceId = "default"): ModelCatalogEntry[] {
+    const ov = this.getOverlay(deviceId);
+    if (ov.kind !== "new-chat-model") return this.getModelCatalog();
+    if (ov.scope === "favorites") {
       const favs = this.getFavoriteModelCatalog();
       return favs.length > 0 ? favs : this.getFullModelCatalog();
     }
     return this.getFullModelCatalog();
   }
 
-  closeOverlay(): void {
-    if (this.overlay.kind === "none") return;
-    this.overlay = { kind: "none" };
+  closeOverlay(deviceId = "default"): void {
+    if (this.getOverlay(deviceId).kind === "none") return;
+    this.setOverlayFor(deviceId, { kind: "none" });
     this.emit();
   }
 
-  stepOverlayQueue(ticks: number): void {
-    if (this.overlay.kind === "approval") {
+  stepOverlayQueue(ticks: number, deviceId = "default", pageSize = 7): void {
+    const ov = this.getOverlay(deviceId);
+    const safePage = Math.max(1, pageSize);
+
+    if (ov.kind === "approval") {
       const queue = this.getPendingApprovalQueue();
       if (queue.length === 0) {
-        this.closeOverlay();
+        this.closeOverlay(deviceId);
         return;
       }
-      const { index } = this.getActiveOverlayApproval();
+      const { index } = this.getActiveOverlayApproval(deviceId);
       const base = index >= 0 ? index : 0;
       const nextIdx = (((base + ticks) % queue.length) + queue.length) % queue.length;
       const next = queue[nextIdx]!;
-      this.overlay = { ...this.overlay, requestId: next.requestId, scrollLine: 0 };
+      this.setOverlayFor(deviceId, { ...ov, requestId: next.requestId, scrollLine: 0 });
       this.focusedThreadId = next.threadId;
       this.emit();
       return;
     }
 
-    if (this.overlay.kind === "question") {
+    if (ov.kind === "question") {
       const queue = this.getPendingQuestionQueue();
       if (queue.length === 0) {
-        this.closeOverlay();
+        this.closeOverlay(deviceId);
         return;
       }
-      const { index } = this.getActiveOverlayQuestion();
+      const { index } = this.getActiveOverlayQuestion(deviceId);
       const base = index >= 0 ? index : 0;
       const nextIdx = (((base + ticks) % queue.length) + queue.length) % queue.length;
       const next = queue[nextIdx]!;
-      this.overlay = {
-        ...this.overlay,
+      this.setOverlayFor(deviceId, {
+        ...ov,
         requestId: next.requestId,
         questionIndex: 0,
         optionPage: 0,
         selectedByQuestionId: {}
-      };
+      });
       this.focusedThreadId = next.threadId;
       this.emit();
       return;
     }
 
-    if (this.overlay.kind === "fleet") {
+    if (ov.kind === "fleet") {
       const list = this.getFilteredThreads("active");
-      const totalPages = Math.max(1, Math.ceil(list.length / 7));
-      const nextPage = (((this.overlay.page + ticks) % totalPages) + totalPages) % totalPages;
-      this.overlay = { ...this.overlay, page: nextPage };
+      const totalPages = Math.max(1, Math.ceil(list.length / safePage));
+      const nextPage = (((ov.page + ticks) % totalPages) + totalPages) % totalPages;
+      this.setOverlayFor(deviceId, { ...ov, page: nextPage });
       this.emit();
       return;
     }
 
-    if (this.overlay.kind === "new-chat-project") {
+    if (ov.kind === "model-picker") {
+      const list = this.getModelPickerCatalog(deviceId);
+      const itemsPerPage = Math.max(1, safePage - 1); // leaves 1 slot for FAVS/ALL toggle
+      const totalPages = Math.max(1, Math.ceil(list.length / itemsPerPage));
+      const nextPage = (((ov.page + ticks) % totalPages) + totalPages) % totalPages;
+      this.setOverlayFor(deviceId, { ...ov, page: nextPage });
+      this.emit();
+      return;
+    }
+
+    if (ov.kind === "new-chat-project") {
       const list = this.getLaunchProjects();
-      const totalPages = Math.max(1, Math.ceil(list.length / 7));
-      const nextPage = (((this.overlay.page + ticks) % totalPages) + totalPages) % totalPages;
-      this.overlay = { ...this.overlay, page: nextPage };
+      const totalPages = Math.max(1, Math.ceil(list.length / safePage));
+      const nextPage = (((ov.page + ticks) % totalPages) + totalPages) % totalPages;
+      this.setOverlayFor(deviceId, { ...ov, page: nextPage });
       this.emit();
       return;
     }
 
-    if (this.overlay.kind === "new-chat-env") {
+    if (ov.kind === "new-chat-env") {
       const totalItems = 4 + this.peerLinks.length;
-      const totalPages = Math.max(1, Math.ceil(totalItems / 7));
-      const nextPage = (((this.overlay.page + ticks) % totalPages) + totalPages) % totalPages;
-      this.overlay = { ...this.overlay, page: nextPage };
+      const totalPages = Math.max(1, Math.ceil(totalItems / safePage));
+      const nextPage = (((ov.page + ticks) % totalPages) + totalPages) % totalPages;
+      this.setOverlayFor(deviceId, { ...ov, page: nextPage });
       this.emit();
       return;
     }
 
-    if (this.overlay.kind === "new-chat-model") {
-      const list = this.getNewChatModelCatalog();
-      const totalPages = Math.max(1, Math.ceil(list.length / 7));
-      const nextPage = (((this.overlay.page + ticks) % totalPages) + totalPages) % totalPages;
-      this.overlay = { ...this.overlay, page: nextPage };
+    if (ov.kind === "new-chat-model") {
+      const list = this.getNewChatModelCatalog(deviceId);
+      const totalPages = Math.max(1, Math.ceil(list.length / safePage));
+      const nextPage = (((ov.page + ticks) % totalPages) + totalPages) % totalPages;
+      this.setOverlayFor(deviceId, { ...ov, page: nextPage });
       this.emit();
     }
   }
 
-  scrollOverlay(ticks: number): void {
-    if (this.overlay.kind === "approval") {
-      const nextScroll = Math.max(0, this.overlay.scrollLine + ticks);
-      this.overlay = { ...this.overlay, scrollLine: nextScroll };
+  scrollOverlay(ticks: number, deviceId = "default", optionsPerPage = 4): void {
+    const ov = this.getOverlay(deviceId);
+    if (ov.kind === "approval") {
+      const nextScroll = Math.max(0, ov.scrollLine + ticks);
+      this.setOverlayFor(deviceId, { ...ov, scrollLine: nextScroll });
       this.emit();
       return;
     }
 
-    if (this.overlay.kind === "question") {
-      const { item } = this.getActiveOverlayQuestion();
-      const q = item?.questions[this.overlay.questionIndex];
-      const totalPages = Math.max(1, Math.ceil((q?.options.length ?? 0) / 4));
-      const nextPage =
-        (((this.overlay.optionPage + ticks) % totalPages) + totalPages) % totalPages;
-      this.overlay = { ...this.overlay, optionPage: nextPage };
+    if (ov.kind === "question") {
+      const { item } = this.getActiveOverlayQuestion(deviceId);
+      const q = item?.questions[ov.questionIndex];
+      const perPage = Math.max(1, optionsPerPage);
+      const totalPages = Math.max(1, Math.ceil((q?.options.length ?? 0) / perPage));
+      const nextPage = (((ov.optionPage + ticks) % totalPages) + totalPages) % totalPages;
+      this.setOverlayFor(deviceId, { ...ov, optionPage: nextPage });
       this.emit();
     }
   }
@@ -1864,53 +1975,56 @@ export class T3Store {
    * For multi-select: toggles the option in-place (submit button finalizes).
    */
   selectQuestionOption(
-    optionIndexInPage: number
+    optionIndexInPage: number,
+    deviceId = "default",
+    optionsPerPage = 4
   ): {
     readyToSubmit: boolean;
     threadId?: string;
     requestId?: string;
     answers?: Record<string, string | string[]>;
   } {
-    if (this.overlay.kind !== "question") return { readyToSubmit: false };
-    const { item } = this.getActiveOverlayQuestion();
+    const ov = this.getOverlay(deviceId);
+    if (ov.kind !== "question") return { readyToSubmit: false };
+    const { item } = this.getActiveOverlayQuestion(deviceId);
     if (!item) return { readyToSubmit: false };
-    const question = item.questions[this.overlay.questionIndex];
+    const question = item.questions[ov.questionIndex];
     if (!question) return { readyToSubmit: false };
 
-    const absIdx = this.overlay.optionPage * 4 + optionIndexInPage;
+    const absIdx = ov.optionPage * Math.max(1, optionsPerPage) + optionIndexInPage;
     const opt = question.options[absIdx];
     if (!opt) return { readyToSubmit: false };
 
-    const prevSelected = this.overlay.selectedByQuestionId[question.id] ?? [];
+    const prevSelected = ov.selectedByQuestionId[question.id] ?? [];
     if (question.multiSelect) {
       const exists = prevSelected.includes(opt.label);
       const nextSelected = exists
         ? prevSelected.filter((l) => l !== opt.label)
         : [...prevSelected, opt.label];
-      this.overlay = {
-        ...this.overlay,
+      this.setOverlayFor(deviceId, {
+        ...ov,
         selectedByQuestionId: {
-          ...this.overlay.selectedByQuestionId,
+          ...ov.selectedByQuestionId,
           [question.id]: nextSelected
         }
-      };
+      });
       this.emit();
       return { readyToSubmit: false };
     }
 
     // Single-select: record answer & advance or submit
     const updatedMap: Record<string, string[]> = {
-      ...this.overlay.selectedByQuestionId,
+      ...ov.selectedByQuestionId,
       [question.id]: [opt.label]
     };
 
-    if (this.overlay.questionIndex + 1 < item.questions.length) {
-      this.overlay = {
-        ...this.overlay,
-        questionIndex: this.overlay.questionIndex + 1,
+    if (ov.questionIndex + 1 < item.questions.length) {
+      this.setOverlayFor(deviceId, {
+        ...ov,
+        questionIndex: ov.questionIndex + 1,
         optionPage: 0,
         selectedByQuestionId: updatedMap
-      };
+      });
       this.emit();
       return { readyToSubmit: false };
     }
@@ -1924,24 +2038,25 @@ export class T3Store {
     };
   }
 
-  submitCurrentMultiSelectQuestion(): {
+  submitCurrentMultiSelectQuestion(deviceId = "default"): {
     readyToSubmit: boolean;
     threadId?: string;
     requestId?: string;
     answers?: Record<string, string | string[]>;
   } {
-    if (this.overlay.kind !== "question") return { readyToSubmit: false };
-    const { item } = this.getActiveOverlayQuestion();
+    const ov = this.getOverlay(deviceId);
+    if (ov.kind !== "question") return { readyToSubmit: false };
+    const { item } = this.getActiveOverlayQuestion(deviceId);
     if (!item) return { readyToSubmit: false };
-    const question = item.questions[this.overlay.questionIndex];
+    const question = item.questions[ov.questionIndex];
     if (!question) return { readyToSubmit: false };
 
-    if (this.overlay.questionIndex + 1 < item.questions.length) {
-      this.overlay = {
-        ...this.overlay,
-        questionIndex: this.overlay.questionIndex + 1,
+    if (ov.questionIndex + 1 < item.questions.length) {
+      this.setOverlayFor(deviceId, {
+        ...ov,
+        questionIndex: ov.questionIndex + 1,
         optionPage: 0
-      };
+      });
       this.emit();
       return { readyToSubmit: false };
     }
@@ -1950,7 +2065,7 @@ export class T3Store {
       readyToSubmit: true,
       threadId: item.threadId,
       requestId: item.requestId,
-      answers: this.buildAnswersPayload(item, this.overlay.selectedByQuestionId)
+      answers: this.buildAnswersPayload(item, ov.selectedByQuestionId)
     };
   }
 
@@ -1994,66 +2109,77 @@ export class T3Store {
   }
 
   private reconcileOverlayAfterUpdate(): void {
-    if (this.overlay.kind === "approval") {
-      const targetId = this.overlay.requestId;
-      const originSlot = this.overlay.originSlot;
-      const approvals = this.getPendingApprovalQueue();
-      if (approvals.length > 0) {
-        const stillThere = approvals.find((a) => a.requestId === targetId);
-        if (!stillThere) {
-          const next = approvals[0]!;
-          this.overlay = { kind: "approval", requestId: next.requestId, scrollLine: 0, originSlot };
-          this.focusedThreadId = next.threadId;
+    for (const [deviceId, ov] of Array.from(this.overlays.entries())) {
+      if (ov.kind === "approval") {
+        const targetId = ov.requestId;
+        const originSlot = ov.originSlot;
+        const approvals = this.getPendingApprovalQueue();
+        if (approvals.length > 0) {
+          const stillThere = approvals.find((a) => a.requestId === targetId);
+          if (!stillThere) {
+            const next = approvals[0]!;
+            this.setOverlayFor(deviceId, {
+              kind: "approval",
+              requestId: next.requestId,
+              scrollLine: 0,
+              originSlot
+            });
+            this.focusedThreadId = next.threadId;
+          }
+          continue;
         }
-        return;
-      }
-      // If approvals cleared but a question is waiting, transition smoothly to question overlay
-      const questions = this.getPendingQuestionQueue();
-      if (questions.length > 0) {
-        const nextQ = questions[0]!;
-        this.overlay = {
-          kind: "question",
-          requestId: nextQ.requestId,
-          questionIndex: 0,
-          optionPage: 0,
-          selectedByQuestionId: {},
-          originSlot
-        };
-        this.focusedThreadId = nextQ.threadId;
-        return;
-      }
-      this.overlay = { kind: "none" };
-      return;
-    }
-
-    if (this.overlay.kind === "question") {
-      const targetId = this.overlay.requestId;
-      const originSlot = this.overlay.originSlot;
-      const questions = this.getPendingQuestionQueue();
-      if (questions.length > 0) {
-        const stillThere = questions.find((q) => q.requestId === targetId);
-        if (!stillThere) {
+        const questions = this.getPendingQuestionQueue();
+        if (questions.length > 0) {
           const nextQ = questions[0]!;
-          this.overlay = {
+          this.setOverlayFor(deviceId, {
             kind: "question",
             requestId: nextQ.requestId,
             questionIndex: 0,
             optionPage: 0,
             selectedByQuestionId: {},
             originSlot
-          };
+          });
           this.focusedThreadId = nextQ.threadId;
+          continue;
         }
-        return;
+        this.setOverlayFor(deviceId, { kind: "none" });
+        continue;
       }
-      const approvals = this.getPendingApprovalQueue();
-      if (approvals.length > 0) {
-        const next = approvals[0]!;
-        this.overlay = { kind: "approval", requestId: next.requestId, scrollLine: 0, originSlot };
-        this.focusedThreadId = next.threadId;
-        return;
+
+      if (ov.kind === "question") {
+        const targetId = ov.requestId;
+        const originSlot = ov.originSlot;
+        const questions = this.getPendingQuestionQueue();
+        if (questions.length > 0) {
+          const stillThere = questions.find((q) => q.requestId === targetId);
+          if (!stillThere) {
+            const nextQ = questions[0]!;
+            this.setOverlayFor(deviceId, {
+              kind: "question",
+              requestId: nextQ.requestId,
+              questionIndex: 0,
+              optionPage: 0,
+              selectedByQuestionId: {},
+              originSlot
+            });
+            this.focusedThreadId = nextQ.threadId;
+          }
+          continue;
+        }
+        const approvals = this.getPendingApprovalQueue();
+        if (approvals.length > 0) {
+          const next = approvals[0]!;
+          this.setOverlayFor(deviceId, {
+            kind: "approval",
+            requestId: next.requestId,
+            scrollLine: 0,
+            originSlot
+          });
+          this.focusedThreadId = next.threadId;
+          continue;
+        }
+        this.setOverlayFor(deviceId, { kind: "none" });
       }
-      this.overlay = { kind: "none" };
     }
   }
 }

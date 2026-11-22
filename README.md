@@ -1,11 +1,11 @@
 # T3 Deck
 
-**Real-time [T3 Code](https://github.com/pingdotgg/t3code) mission control for Elgato Stream Deck+.**
+**Real-time [T3 Code](https://github.com/pingdotgg/t3code) mission control for Elgato Stream Deck.**
 
 [![CI](https://github.com/charlesbine/t3-deck/actions/workflows/ci.yml/badge.svg)](https://github.com/charlesbine/t3-deck/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-1.1.0-38BDF8.svg)](#whats-new-in-v11)
+[![Version](https://img.shields.io/badge/version-1.2.0-38BDF8.svg)](#whats-new-in-v12--multi-device-support)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Elgato Stream Deck+](https://img.shields.io/badge/hardware-Stream%20Deck%2B-111827.svg)](#mission-control-reference)
+[![Elgato Stream Deck](https://img.shields.io/badge/hardware-Plus%20%7C%20Plus%20XL%20%7C%20MK.2%20%7C%20XL%20%7C%20Neo%20%7C%20Mini-111827.svg)](#supported-elgato-devices)
 
 T3 Deck connects directly to your local T3 Code server over its native **Orchestration V2 WebSocket RPC** stream — zero extra daemon, zero polling, and sub-50ms live updates across every provider you run in T3 Code (Claude, Codex, Antigravity, OpenCode, and more).
 
@@ -23,7 +23,36 @@ Hold any contextual key — or tap **`APPROVE?`** when agents are waiting — an
 
 ---
 
-## What's New in v1.1
+## What's New in v1.2 — Multi-Device Support
+
+T3 Deck now adapts automatically to **every Elgato Stream Deck** — reading each connected device's exact key grid (`device.size`) and encoder strip (`device.type`) at runtime, with **independent per-device overlays** if you run more than one deck at your desk.
+
+![T3 Deck Multi-Device Layouts](marketing/multi-device-layouts.png)
+
+*On keypad-only decks like the **Stream Deck MK.2**, Row 0 automatically switches to bezel-safe structured info cards so no text is ever cut across physical key gaps:*
+
+![T3 Deck on Stream Deck MK.2 hardware](marketing/mk2-approval-hardware.png)
+
+### Supported Elgato Devices
+
+| Device | Grid & Controls | Bundled Profile | Overlay & Strip Behavior |
+|---|---|---|---|
+| **Stream Deck+** | `4×2` keys + 4 dials (`1600×200` strip) | `T3 Deck` | Full `1600×200` panoramic touch strip + 4-knob New Chat cockpit |
+| **Stream Deck+ XL** | `9×4` keys + 6 dials (`2400×200` strip) | `T3 Deck (+ XL)` | Extended `2400×200` 6-dial strip (Dials 5 & 6 = Prompt & Snooze scrubbers) + 20-tile Live Fleet Wall |
+| **Stream Deck MK.2 / Classic** | `5×3` keys (15) | `T3 Deck (MK.2)` | Core 8 + 4 Keypad Cockpit keys + 3 Thread Slots; **Row 0 turns into 5 bezel-safe structured info cards** (Danger, Subagent, Command, Reason) during approvals & questions |
+| **Stream Deck XL** | `8×4` keys (32) | `T3 Deck (XL)` | Mission Control + 4 Cockpit keys + 4 Quick Prompts + 16-tile Live Fleet Wall; **Row 0 turns into 8 bezel-safe info cards** during approvals & questions |
+| **Stream Deck Neo** | `4×2` keys (8, 2 pages) | `T3 Deck (Neo)` | Page 1 Triage & Control + Page 2 Keypad Cockpit & 4 Thread Slots (via Neo's built-in page touch points); compact inline inspect tile |
+| **Stream Deck Mini** | `3×2` keys (6, 2 pages) | `T3 Deck (Mini)` | Page 1 Triage + Thread/Model/Mode + Page 2 New Chat/Prompt/Settle/Open/Snooze/Usage; compact 6-key approval/question views |
+| **Mobile / Virtual / Studio / Galleon** | Dynamic (`device.size`) | Drag from sidebar | Automatically adapts grid pagination, `originSlot` `BACK` placement, and structured info cards |
+
+- **Dual-Controller Actions (`Keypad` + `Encoder`):** `Thread Navigator`, `Model & Provider`, `Mode & Effort`, `Usage Radar`, `Send / Steer Prompt`, and `Snooze / Sync` work seamlessly on **both** LCD keys and rotary dials.
+- **Mix-and-Match Pages & Live Fleet Zones:** Drop just 1–7 T3 Deck keys onto a page next to Spotify, OBS, or Zoom and overlays automatically map onto *only* your visible T3 keys. On **XL** and **Plus XL**, focused overlays stay scoped to the left control cluster so your right-hand **Live Fleet Wall** stays live and clickable (with real-time queue counts on Plus XL Dials 5–6).
+- **Keypad-Native Pickers:** Tapping **Model & Provider** on a keypad-only deck opens a full-grid **Model Picker** (`★ FAVS ↔ ALL` + 1-tap apply); tapping **Mode & Effort** opens a 1-tap **Permission + Plan/Code + Reasoning Effort** grid.
+- **Auto-Numbered Fleet Walls:** Placing multiple **Thread Slot** keys on any device automatically numbers them `#1..#N` in reading order — zero manual slot index config.
+
+---
+
+## Highlights & Interactive Flows
 
 - **Panoramic `1600×200` Touch-Strip Takeovers** — All 4 flush dial canvases combine into a continuous widescreen display for inspecting commands, reading questions, scrubbing snooze durations, previewing prompts, and building new chats.
 - **2-Step Safe Approval Inspector + Multi-Subagent Queue** — Never approve blind. Tapping `APPROVE?` reveals *which* thread or subagent is asking, its parent thread, and the exact shell command or file path — with an automatic **crimson danger alert** for destructive patterns (`rm -rf`, `git push --force`, `reset --hard`, `DROP TABLE`, etc.). Approving or denying automatically slides the next queued request (`1/2 → 2/2`) into view.
@@ -154,7 +183,7 @@ flowchart LR
 ## Requirements
 
 - **macOS 13+**
-- **Elgato Stream Deck 7.1+** (built for **Stream Deck+**)
+- **Elgato Stream Deck 7.1+** (works with **Stream Deck+**, **+ XL**, **MK.2**, **XL**, **Neo**, **Mini**, **Mobile**, and **Virtual Stream Deck**)
 - **T3 Code** desktop app / local server (`~/.t3/bin/t3` CLI installed automatically by T3 Code Desktop)
 
 ---
@@ -207,9 +236,9 @@ npm run pack       # Build + bundled profile + Elgato CLI validate (0 warnings) 
 
 ---
 
-## Roadmap
+## Publishing to Elgato Marketplace
 
-- **Multi-Device Support (`v1.2.0`):** Dynamic per-device `SurfaceGeometry` + dual-controller (`Keypad` + `Encoder`) actions + virtual multi-key info banners + bundled profiles for **Stream Deck+ XL**, **Stream Deck MK.2**, **Stream Deck XL**, **Stream Deck Neo**, and **Stream Deck Mini**.
+See [MARKETPLACE.md](MARKETPLACE.md) for the complete Maker Console submission checklist, required asset specs (pre-generated in `marketing/marketplace/`), and review guidelines.
 
 ---
 

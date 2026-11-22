@@ -900,13 +900,30 @@ export interface PanoramicFrame {
 }
 
 /**
- * Slices a unified 1600x200 panoramic frame into a single 400x200 dial viewport (`col` = 0..3).
- * Because all 4 Stream Deck+ dials sit flush side-by-side with zero gap, the 4 viewBox slices
- * form one seamless 1600x200 panoramic display.
+ * Slices a unified panoramic frame into a single 400x200 dial viewport (`col` = 0..stripCols-1).
+ * On Stream Deck+ (`stripCols = 4`), slices 1600x200 cleanly.
+ * On Stream Deck+ XL (`stripCols = 6`), extends seamlessly to 2400x200 with a right-hand companion panel.
  */
-export function slicePanoramicFrame(frame: PanoramicFrame, col: number): string {
-  const clamped = Math.max(0, Math.min(3, col));
+export function slicePanoramicFrame(
+  frame: PanoramicFrame,
+  col: number,
+  stripCols = 4,
+  extraRightInner?: string
+): string {
+  const safeCols = Math.max(4, stripCols);
+  const totalW = safeCols * 400;
+  const clamped = Math.max(0, Math.min(safeCols - 1, col));
   const vx = clamped * 400;
+  const rightExtension =
+    totalW > 1600
+      ? `<line x1="1600" y1="22" x2="1600" y2="178" stroke="${frame.accent}" stroke-opacity="0.32" stroke-width="2"/>
+         ${
+           extraRightInner ??
+           `<text x="1632" y="54" font-family="${FONT}" font-size="16" font-weight="800" fill="${frame.accent}" letter-spacing="0.8">STREAM DECK+ XL</text>
+            <text x="1632" y="106" font-family="${FONT}" font-size="24" font-weight="800" fill="#FFFFFF">PANORAMIC VIEW ACTIVE</text>
+            <text x="1632" y="150" font-family="${FONT}" font-size="15" font-weight="600" fill="#94A3B8">Use keys above or press BACK to return</text>`
+         }`
+      : "";
   return `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200" viewBox="${vx} 0 400 200">
   <defs>
     <linearGradient id="pbg" x1="0" y1="0" x2="0" y2="1">
@@ -914,9 +931,10 @@ export function slicePanoramicFrame(frame: PanoramicFrame, col: number): string 
       <stop offset="100%" stop-color="${frame.bgBottom}"/>
     </linearGradient>
   </defs>
-  <rect x="4" y="4" width="1592" height="192" rx="16" fill="url(#pbg)" stroke="${frame.accent}" stroke-opacity="0.7" stroke-width="3"/>
-  <rect x="24" y="4" width="1552" height="5" rx="2.5" fill="${frame.accent}" opacity="0.95"/>
+  <rect x="4" y="4" width="${totalW - 8}" height="192" rx="16" fill="url(#pbg)" stroke="${frame.accent}" stroke-opacity="0.7" stroke-width="3"/>
+  <rect x="24" y="4" width="${totalW - 48}" height="5" rx="2.5" fill="${frame.accent}" opacity="0.95"/>
   ${frame.inner}
+  ${rightExtension}
 </svg>`;
 }
 
@@ -1581,5 +1599,459 @@ export function renderOverlayActionKey(opts: {
     ${opts.subLabel ? `<text x="72" y="128" text-anchor="middle" font-family="${FONT}" font-size="10" font-weight="600" fill="#94A3B8">${escXml(truncate(opts.subLabel, 16))}</text>` : ""}
   `,
     Boolean(opts.glow && !opts.disabled)
+  );
+}
+
+// ============================================================
+// MULTI-DEVICE RENDERERS: KEYPAD CARDS, INFO ROW & +XL DIALS
+// ============================================================
+
+export interface InfoCardKeyOpts {
+  accent: string;
+  bgTop: string;
+  bgBottom?: string;
+  topLabel: string;
+  lines: string[];
+  footer?: string;
+  mono?: boolean;
+  glow?: boolean;
+  center?: boolean;
+}
+
+/**
+ * Renders a self-contained, bezel-safe 144x144 info card for keypad-only devices
+ * (MK.2, XL, Neo, Mini) where physical key bezels make sliced panoramic text unreadable.
+ */
+export function renderInfoCardKey(opts: InfoCardKeyOpts): string {
+  const bgBottom = opts.bgBottom ?? "#080C14";
+  const font = opts.mono ? MONO : FONT;
+  const maxLines = opts.lines.slice(0, 4);
+  const lineCount = maxLines.length;
+  const fontSize = opts.mono
+    ? lineCount >= 4
+      ? 12
+      : 13
+    : lineCount <= 2
+      ? 16
+      : lineCount === 3
+        ? 14
+        : 12;
+  const lineHeight = opts.mono ? (lineCount >= 4 ? 19 : 21) : lineCount <= 2 ? 24 : 20;
+  const startY =
+    lineCount === 1
+      ? 78
+      : lineCount === 2
+        ? 64
+        : lineCount === 3
+          ? 56
+          : 50;
+  const xPos = opts.center ? 72 : 16;
+  const anchor = opts.center ? ' text-anchor="middle"' : "";
+  const maxChars = opts.mono ? 15 : opts.center ? 13 : 14;
+
+  const bodySvg = maxLines
+    .map(
+      (line, idx) =>
+        `<text x="${xPos}" y="${startY + idx * lineHeight}"${anchor} font-family="${font}" font-size="${fontSize}" font-weight="${idx === 0 && !opts.mono ? 800 : 700}" fill="${idx === 0 ? "#FFFFFF" : "#E2E8F0"}">${escXml(truncate(line, maxChars))}</text>`
+    )
+    .join("\n");
+
+  return keyShell(
+    opts.accent,
+    opts.bgTop,
+    bgBottom,
+    `
+    <text x="72" y="26" text-anchor="middle" font-family="${FONT}" font-size="10.5" font-weight="800" fill="${opts.accent}" letter-spacing="0.7">${escXml(truncate(opts.topLabel, 16))}</text>
+    ${bodySvg}
+    ${
+      opts.footer
+        ? `<text x="72" y="130" text-anchor="middle" font-family="${FONT}" font-size="9.5" font-weight="700" fill="#94A3B8">${escXml(truncate(opts.footer, 18))}</text>`
+        : ""
+    }
+  `,
+    Boolean(opts.glow)
+  );
+}
+
+/**
+ * Splits a command/question/prompt cleanly across `maxCards` keycaps on word/path boundaries
+ * so no character is ever sliced in half by a physical Stream Deck key bezel.
+ */
+export function chunkTextForKeyCards(
+  text: string,
+  charsPerLine: number,
+  linesPerCard: number,
+  maxCards: number
+): string[][] {
+  const cleaned = text.replace(/\s+/g, " ").trim();
+  if (!cleaned) return [];
+  const allLines: string[] = [];
+  let rem = cleaned;
+  while (rem.length > 0 && allLines.length < linesPerCard * maxCards) {
+    if (rem.length <= charsPerLine) {
+      allLines.push(rem);
+      rem = "";
+      break;
+    }
+    let split = rem.lastIndexOf(" ", charsPerLine);
+    if (split < Math.floor(charsPerLine * 0.35)) {
+      const slash = rem.lastIndexOf("/", charsPerLine);
+      if (slash > 0) split = slash + 1;
+      else split = charsPerLine;
+    }
+    allLines.push(rem.slice(0, split).trimEnd());
+    rem = rem.slice(split).trimStart();
+  }
+  if (rem.length > 0 && allLines.length > 0) {
+    const last = allLines[allLines.length - 1]!;
+    allLines[allLines.length - 1] =
+      last.length >= charsPerLine ? `${last.slice(0, charsPerLine - 1)}…` : `${last}…`;
+  }
+  const cards: string[][] = [];
+  for (let i = 0; i < allLines.length; i += linesPerCard) {
+    cards.push(allLines.slice(i, i + linesPerCard));
+  }
+  return cards.slice(0, maxCards);
+}
+
+export function renderModelPickerPanoramicFrame(
+  scope: ModelCatalogScope,
+  page: number,
+  totalPages: number,
+  modelCount: number
+): PanoramicFrame {
+  return {
+    accent: "#38BDF8",
+    bgTop: "#0D1E34",
+    bgBottom: "#080C15",
+    inner: `
+      <circle cx="32" cy="40" r="8" fill="#38BDF8"/>
+      <text x="50" y="47" font-family="${FONT}" font-size="19" font-weight="800" fill="#7DD3FC" letter-spacing="0.8">MODEL PICKER · ${scope === "favorites" ? "★ FAVORITES" : "ALL MODELS"}</text>
+      <text x="1574" y="47" text-anchor="end" font-family="${MONO}" font-size="17" font-weight="700" fill="#94A3B8">${modelCount} READY · PAGE ${page + 1}/${Math.max(1, totalPages)}</text>
+      <text x="28" y="114" font-family="${FONT}" font-size="30" font-weight="800" fill="#FFFFFF">Tap any model key to apply immediately</text>
+      <text x="28" y="160" font-family="${FONT}" font-size="17" font-weight="600" fill="#94A3B8">Toggle ★ FAVS / ALL to switch catalog scope · Tap BACK to cancel</text>
+    `
+  };
+}
+
+export function renderModeEffortPanoramicFrame(
+  thread: ThreadShell | null,
+  entry: ModelCatalogEntry | null
+): PanoramicFrame {
+  const modeLabel = thread ? thread.runtimeMode.toUpperCase() : "NO THREAD";
+  const isPlan = thread?.interactionMode === "plan";
+  const effort =
+    thread && entry?.reasoningDescriptor
+      ? resolveReasoningValue(thread.modelSelection, entry.reasoningDescriptor) || "DEFAULT"
+      : "N/A";
+  return {
+    accent: isPlan ? "#C084FC" : "#10B981",
+    bgTop: isPlan ? "#26103C" : "#0A251D",
+    bgBottom: "#080C15",
+    inner: `
+      <circle cx="32" cy="40" r="8" fill="${isPlan ? "#C084FC" : "#10B981"}"/>
+      <text x="50" y="47" font-family="${FONT}" font-size="19" font-weight="800" fill="${isPlan ? "#E9D5FF" : "#6EE7B7"}" letter-spacing="0.8">MODE &amp; REASONING EFFORT</text>
+      <text x="1574" y="47" text-anchor="end" font-family="${MONO}" font-size="18" font-weight="800" fill="#FFFFFF">${escXml(modeLabel)} · ${isPlan ? "PLAN" : "CODE"} · ${escXml(effort.toUpperCase())}</text>
+      <text x="28" y="114" font-family="${FONT}" font-size="28" font-weight="800" fill="#FFFFFF">Tap any runtime mode, Plan toggle, or effort level above</text>
+      <text x="28" y="160" font-family="${FONT}" font-size="17" font-weight="600" fill="#94A3B8">${escXml(truncate(thread?.title ?? "No thread focused", 64))}</text>
+    `
+  };
+}
+
+/** 144x144 Keypad card for Thread Navigator (MK.2 / XL / Neo / Mini / Mobile / Virtual). */
+export function renderThreadKey(
+  thread: ThreadShell | null,
+  projectName: string,
+  filterMode: ThreadFilterMode,
+  index: number,
+  total: number,
+  connected: boolean,
+  toast?: ToastNotice
+): string {
+  if (toast) {
+    return keyShell(
+      toast.accent,
+      "#10253A",
+      "#090D16",
+      `<text x="72" y="76" text-anchor="middle" font-family="${FONT}" font-size="14" font-weight="800" fill="${toast.accent}">${escXml(truncate(toast.label, 12))}</text>`,
+      true
+    );
+  }
+  if (!connected || !thread) {
+    return keyShell(
+      "#475569",
+      "#121826",
+      "#090C12",
+      `
+      <text x="72" y="28" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="800" fill="#64748B">THREADS</text>
+      <text x="72" y="78" text-anchor="middle" font-family="${FONT}" font-size="14" font-weight="800" fill="#94A3B8">${connected ? "NO THREADS" : "OFFLINE"}</text>
+      <text x="72" y="126" text-anchor="middle" font-family="${FONT}" font-size="10" font-weight="700" fill="#475569">${escXml(filterMode.toUpperCase())}</text>
+    `
+    );
+  }
+
+  const snoozed = isThreadSnoozed(thread);
+  const eta = snoozed && thread.snoozedUntil ? formatResetCountdown(thread.snoozedUntil) : "";
+  const status = classifyThread(thread);
+  const theme = CATEGORY_THEME[status];
+  const color = snoozed ? "#818CF8" : theme.accent;
+  const badge = snoozed ? `ZZZ ${eta.toUpperCase()}` : theme.badge;
+  const lines = wrapLines(thread.title || "Untitled", 14, 2);
+
+  return keyShell(
+    color,
+    status === "approval" ? "#2E1C06" : status === "question" ? "#26103D" : "#0E1C2E",
+    "#080C14",
+    `
+    <circle cx="20" cy="24" r="4.5" fill="${color}"/>
+    <text x="30" y="28" font-family="${FONT}" font-size="10" font-weight="800" fill="${color}">${escXml(truncate(badge, 10))}</text>
+    <text x="128" y="28" text-anchor="end" font-family="${MONO}" font-size="10" font-weight="700" fill="#94A3B8">${index + 1}/${total}</text>
+
+    <text x="72" y="60" text-anchor="middle" font-family="${FONT}" font-size="13" font-weight="800" fill="#FFFFFF">${escXml(lines[0] ?? "")}</text>
+    ${lines[1] ? `<text x="72" y="78" text-anchor="middle" font-family="${FONT}" font-size="13" font-weight="800" fill="#E2E8F0">${escXml(lines[1])}</text>` : ""}
+
+    <rect x="20" y="92" width="104" height="19" rx="5" fill="#0F172A" stroke="#334155"/>
+    <text x="72" y="105" text-anchor="middle" font-family="${FONT}" font-size="10" font-weight="700" fill="#CBD5E1">${escXml(truncate(projectName, 13))}</text>
+    <text x="72" y="129" text-anchor="middle" font-family="${FONT}" font-size="9" font-weight="700" fill="#64748B">TAP: NEXT · HOLD: LIST</text>
+  `,
+    status === "approval" || status === "question"
+  );
+}
+
+/** 144x144 Keypad card for Model & Provider (MK.2 / XL / Neo / Mini). */
+export function renderModelKey(
+  thread: ThreadShell | null,
+  entry: ModelCatalogEntry | null,
+  scope: ModelCatalogScope,
+  toast?: ToastNotice
+): string {
+  if (toast) {
+    return keyShell(
+      toast.accent,
+      "#10253A",
+      "#090D16",
+      `<text x="72" y="76" text-anchor="middle" font-family="${FONT}" font-size="14" font-weight="800" fill="${toast.accent}">${escXml(truncate(toast.label, 12))}</text>`,
+      true
+    );
+  }
+  const accent = entry?.accentColor ?? "#38BDF8";
+  const providerLabel = entry?.providerLabel ?? "MODEL";
+  const modelName = entry?.shortName ?? shortModelLabel(thread?.modelSelection?.model ?? "Default");
+  const lines = wrapLines(modelName, 11, 2);
+
+  return keyShell(
+    accent,
+    "#121A2C",
+    "#080C14",
+    `
+    <text x="72" y="26" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="800" fill="${accent}" letter-spacing="0.6">${escXml(truncate(providerLabel.toUpperCase(), 13))}</text>
+    <text x="72" y="${lines[1] ? 64 : 74}" text-anchor="middle" font-family="${FONT}" font-size="18" font-weight="800" fill="#FFFFFF">${escXml(lines[0] ?? "MODEL")}</text>
+    ${lines[1] ? `<text x="72" y="86" text-anchor="middle" font-family="${FONT}" font-size="16" font-weight="800" fill="#E2E8F0">${escXml(lines[1])}</text>` : ""}
+    <rect x="34" y="96" width="76" height="18" rx="6" fill="#0F172A" stroke="${scope === "favorites" ? "#F59E0B" : "#475569"}"/>
+    <text x="72" y="109" text-anchor="middle" font-family="${FONT}" font-size="10" font-weight="800" fill="${scope === "favorites" ? "#FCD34D" : "#CBD5E1"}">${scope === "favorites" ? "★ FAVS" : "ALL"}</text>
+    <text x="72" y="130" text-anchor="middle" font-family="${FONT}" font-size="9" font-weight="700" fill="#64748B">TAP: PICK MODEL</text>
+  `
+  );
+}
+
+/** 144x144 Keypad card for Mode & Effort (MK.2 / XL / Neo / Mini). */
+export function renderModeEffortKey(
+  thread: ThreadShell | null,
+  entry: ModelCatalogEntry | null,
+  toast?: ToastNotice
+): string {
+  if (toast) {
+    return keyShell(
+      toast.accent,
+      "#10253A",
+      "#090D16",
+      `<text x="72" y="76" text-anchor="middle" font-family="${FONT}" font-size="14" font-weight="800" fill="${toast.accent}">${escXml(truncate(toast.label, 12))}</text>`,
+      true
+    );
+  }
+  if (!thread) {
+    return keyShell(
+      "#475569",
+      "#121826",
+      "#090C12",
+      `<text x="72" y="78" text-anchor="middle" font-family="${FONT}" font-size="14" font-weight="800" fill="#64748B">NO THREAD</text>`
+    );
+  }
+
+  const isPlan = thread.interactionMode === "plan";
+  const accent = isPlan ? "#C084FC" : "#10B981";
+  const modeShort =
+    thread.runtimeMode === "approval-required"
+      ? "ASK"
+      : thread.runtimeMode === "auto-accept-edits"
+        ? "EDITS"
+        : thread.runtimeMode === "full-access"
+          ? "FULL"
+          : "AUTO";
+
+  const desc = entry?.reasoningDescriptor;
+  const effortVal = desc ? resolveReasoningValue(thread.modelSelection, desc) : undefined;
+  const effortOpt = desc?.options?.find((o) => o.id === effortVal);
+  const effortLabel = (effortOpt?.label ?? effortVal ?? "STD").toUpperCase();
+
+  return keyShell(
+    accent,
+    isPlan ? "#25103B" : "#0A251D",
+    "#080C14",
+    `
+    <text x="72" y="26" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="800" fill="${accent}" letter-spacing="0.7">${isPlan ? "✦ PLAN MODE" : "CODE MODE"}</text>
+    <text x="72" y="66" text-anchor="middle" font-family="${FONT}" font-size="22" font-weight="800" fill="#FFFFFF">${escXml(modeShort)}</text>
+    <rect x="26" y="79" width="92" height="24" rx="7" fill="#0F172A" stroke="#38BDF8" stroke-opacity="0.6"/>
+    <text x="72" y="95" text-anchor="middle" font-family="${FONT}" font-size="12" font-weight="800" fill="#7DD3FC">${escXml(truncate(effortLabel, 10))}</text>
+    <text x="72" y="128" text-anchor="middle" font-family="${FONT}" font-size="9" font-weight="700" fill="#64748B">TAP: EDIT · HOLD: PLAN</text>
+  `,
+    isPlan
+  );
+}
+
+/** 144x144 Keypad card for Usage Radar (MK.2 / XL / Neo / Mini). */
+export function renderUsageKey(
+  card: UsageCard | null,
+  index: number,
+  total: number,
+  connected: boolean,
+  toast?: ToastNotice
+): string {
+  if (toast) {
+    return keyShell(
+      toast.accent,
+      "#10253A",
+      "#090D16",
+      `<text x="72" y="76" text-anchor="middle" font-family="${FONT}" font-size="14" font-weight="800" fill="${toast.accent}">${escXml(truncate(toast.label, 12))}</text>`,
+      true
+    );
+  }
+  if (!connected || !card) {
+    return keyShell(
+      "#475569",
+      "#121826",
+      "#090C12",
+      `
+      <text x="72" y="28" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="800" fill="#64748B">USAGE</text>
+      <text x="72" y="78" text-anchor="middle" font-family="${FONT}" font-size="13" font-weight="800" fill="#94A3B8">${connected ? "NO LIMITS" : "OFFLINE"}</text>
+      <text x="72" y="126" text-anchor="middle" font-family="${FONT}" font-size="9" font-weight="700" fill="#475569">HOLD: REFRESH</text>
+    `
+    );
+  }
+
+  if (card.unavailable && !card.sessionWindow && !card.weeklyWindow && !card.extraWindow) {
+    return keyShell(
+      "#F59E0B",
+      "#241807",
+      "#090C12",
+      `
+      <text x="72" y="26" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="800" fill="${card.accentColor}">${escXml(truncate(card.label.toUpperCase(), 11))} ${index + 1}/${total}</text>
+      <text x="72" y="70" text-anchor="middle" font-family="${FONT}" font-size="14" font-weight="800" fill="#FBBF24">⚠ EXPIRED</text>
+      <text x="72" y="96" text-anchor="middle" font-family="${FONT}" font-size="10" font-weight="700" fill="#CBD5E1">RENEW SIGN-IN</text>
+      <text x="72" y="128" text-anchor="middle" font-family="${FONT}" font-size="9" font-weight="700" fill="#F59E0B">HOLD: REFRESH</text>
+    `
+    );
+  }
+
+  const w1 = card.sessionWindow ?? card.weeklyWindow;
+  const w2 = card.sessionWindow ? (card.weeklyWindow ?? card.extraWindow) : card.extraWindow;
+  const pct1 = Math.max(0, Math.min(100, Math.round(w1?.usedPercent ?? 0)));
+  const pct2 = Math.max(0, Math.min(100, Math.round(w2?.usedPercent ?? 0)));
+  const c1 = pct1 >= 85 ? "#EF4444" : pct1 >= 65 ? "#F59E0B" : "#10B981";
+  const c2 = pct2 >= 85 ? "#EF4444" : pct2 >= 65 ? "#F59E0B" : "#10B981";
+
+  return keyShell(
+    card.accentColor,
+    "#101929",
+    "#080C14",
+    `
+    <text x="18" y="27" font-family="${FONT}" font-size="11" font-weight="800" fill="#FFFFFF">${escXml(truncate(card.label.toUpperCase(), 9))}</text>
+    <text x="128" y="27" text-anchor="end" font-family="${MONO}" font-size="10" font-weight="700" fill="#94A3B8">${index + 1}/${total}</text>
+
+    <text x="18" y="54" font-family="${FONT}" font-size="10" font-weight="700" fill="#94A3B8">${card.sessionWindow ? "SESS" : "WEEK"}</text>
+    <text x="128" y="54" text-anchor="end" font-family="${MONO}" font-size="12" font-weight="800" fill="${c1}">${pct1}%</text>
+    <rect x="18" y="60" width="110" height="10" rx="5" fill="#1E293B"/>
+    <rect x="18" y="60" width="${Math.max(6, Math.round(1.1 * pct1))}" height="10" rx="5" fill="${c1}"/>
+
+    ${
+      w2
+        ? `<text x="18" y="92" font-family="${FONT}" font-size="10" font-weight="700" fill="#94A3B8">WEEK</text>
+           <text x="128" y="92" text-anchor="end" font-family="${MONO}" font-size="12" font-weight="800" fill="${c2}">${pct2}%</text>
+           <rect x="18" y="98" width="110" height="10" rx="5" fill="#1E293B"/>
+           <rect x="18" y="98" width="${Math.max(6, Math.round(1.1 * pct2))}" height="10" rx="5" fill="${c2}"/>`
+        : ""
+    }
+    <text x="72" y="130" text-anchor="middle" font-family="${FONT}" font-size="9" font-weight="700" fill="#64748B">TAP: NEXT · HOLD: SYNC</text>
+  `
+  );
+}
+
+/** 400x200 Encoder canvas for Stream Deck+ XL Dial 5 (Quick Prompt Scrubber). */
+export function renderQuickPromptDialCanvas(
+  thread: ThreadShell | null,
+  label: string,
+  previewText: string,
+  index: number,
+  total: number,
+  isAiNext: boolean,
+  toast?: ToastNotice
+): string {
+  if (toast) {
+    return dialShell(
+      toast.accent,
+      "#0F2027",
+      "#080C14",
+      `<text x="200" y="108" text-anchor="middle" font-family="${FONT}" font-size="28" font-weight="800" fill="${toast.accent}">${escXml(truncate(toast.label, 20))}</text>`
+    );
+  }
+  const accent = isAiNext ? "#22D3EE" : thread && isThreadRunning(thread) ? "#A78BFA" : "#38BDF8";
+  const lines = wrapLines(previewText, 30, 2);
+  return dialShell(
+    accent,
+    isAiNext ? "#082936" : "#12172B",
+    "#080C14",
+    `
+    <text x="24" y="38" font-family="${FONT}" font-size="16" font-weight="800" fill="${accent}" letter-spacing="0.8">${isAiNext ? "✨ AI NEXT" : thread && isThreadRunning(thread) ? "STEER PROMPT" : "QUICK PROMPT"}</text>
+    <text x="376" y="38" text-anchor="end" font-family="${MONO}" font-size="16" font-weight="700" fill="#94A3B8">${index + 1}/${total}</text>
+    <text x="24" y="80" font-family="${FONT}" font-size="24" font-weight="800" fill="#FFFFFF">${escXml(truncate(label, 20))}</text>
+    <text x="24" y="114" font-family="${FONT}" font-size="15" font-weight="600" fill="#CBD5E1">${escXml(lines[0] ?? "")}</text>
+    ${lines[1] ? `<text x="24" y="136" font-family="${FONT}" font-size="15" font-weight="600" fill="#94A3B8">${escXml(lines[1])}</text>` : ""}
+    <text x="24" y="176" font-family="${FONT}" font-size="13" font-weight="700" fill="#64748B">TURN: PICK · PRESS/TAP: SEND</text>
+  `
+  );
+}
+
+/** 400x200 Encoder canvas for Stream Deck+ XL Dial 6 (Snooze Presets Scrubber). */
+export function renderSnoozeDialCanvas(
+  thread: ThreadShell | null,
+  presetLabel: string,
+  presetDetail: string,
+  index: number,
+  total: number,
+  connected: boolean,
+  toast?: ToastNotice
+): string {
+  if (toast) {
+    return dialShell(
+      toast.accent,
+      "#17193B",
+      "#080C14",
+      `<text x="200" y="108" text-anchor="middle" font-family="${FONT}" font-size="28" font-weight="800" fill="${toast.accent}">${escXml(truncate(toast.label, 20))}</text>`
+    );
+  }
+  const snoozed = Boolean(thread && isThreadSnoozed(thread));
+  const eta = snoozed && thread?.snoozedUntil ? formatResetCountdown(thread.snoozedUntil) : "";
+  const accent = !connected ? "#FB7185" : snoozed ? "#10B981" : "#818CF8";
+  return dialShell(
+    accent,
+    snoozed ? "#0A2820" : "#171A3C",
+    "#080C14",
+    `
+    <text x="24" y="38" font-family="${FONT}" font-size="16" font-weight="800" fill="${accent}" letter-spacing="0.8">${snoozed ? `SNOOZED · ${escXml(eta.toUpperCase())}` : "SNOOZE PRESET"}</text>
+    <text x="376" y="38" text-anchor="end" font-family="${MONO}" font-size="16" font-weight="700" fill="#94A3B8">${index + 1}/${total}</text>
+    <text x="24" y="96" font-family="${FONT}" font-size="32" font-weight="800" fill="#FFFFFF">${snoozed ? "UNSNOOZE" : escXml(truncate(presetLabel, 14))}</text>
+    <text x="24" y="132" font-family="${FONT}" font-size="16" font-weight="600" fill="#CBD5E1">${snoozed ? "Press or tap to wake thread now" : escXml(truncate(presetDetail, 28))}</text>
+    <text x="24" y="176" font-family="${FONT}" font-size="13" font-weight="700" fill="#64748B">TURN: PRESET · PRESS/TAP: APPLY</text>
+  `
   );
 }

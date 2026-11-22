@@ -440,4 +440,28 @@ export type DeckOverlay =
       originSlot: number;
       parentKind: "none" | "new-chat-project" | "new-chat-env";
       parentOriginSlot: number;
+    }
+  | {
+      kind: "model-picker";
+      originSlot: number;
+      page: number;
+      scope: ModelCatalogScope;
+    }
+  | {
+      kind: "mode-effort";
+      originSlot: number;
     };
+
+export interface SurfaceGeometry {
+  deviceId: string;
+  deviceType: number;
+  cols: number;
+  rows: number;
+  stripCols: number;
+  /**
+   * Optional sorted list of physical key slots (`row * cols + col`) currently owned by T3 Deck
+   * overlay controls on this page. Enables mix-and-match pages (e.g. 3 T3 buttons next to Spotify)
+   * and zone-scoped overlays on XL / Plus XL (leaving the right-hand Fleet Wall live).
+   */
+  activeKeySlots?: number[];
+}
