@@ -534,7 +534,8 @@ export function renderThreadDialCanvas(
   index: number,
   total: number,
   connected: boolean,
-  toast?: ToastNotice
+  toast?: ToastNotice,
+  isPeeking = false
 ): string {
   if (toast) {
     return dialShell(
@@ -582,7 +583,9 @@ export function renderThreadDialCanvas(
   const pr = primaryPullRequest(thread);
   const modelShort = shortModelLabel(thread.modelSelection?.model ?? "");
   const posText = total > 0 ? `${index + 1}/${total}` : "0/0";
-  const rightPill = snoozed ? "SNOOZED" : filterBadge;
+  const rightPill = snoozed ? "SNOOZED" : isPeeking ? "PEEKING" : filterBadge;
+  const pillBorder = isPeeking && !snoozed ? "#FBBF24" : theme.accent;
+  const pillText = isPeeking && !snoozed ? "#FDE68A" : "#E2E8F0";
 
   return dialShell(
     theme.accent,
@@ -591,8 +594,8 @@ export function renderThreadDialCanvas(
     `
     <circle cx="30" cy="36" r="9" fill="${theme.accent}"/>
     <text x="48" y="43" font-family="${FONT}" font-size="${theme.badge.length > 10 ? "16" : "19"}" font-weight="800" fill="${theme.accent}" letter-spacing="0.5">${escXml(theme.badge)}</text>
-    <rect x="214" y="19" width="102" height="30" rx="8" fill="#0F172A" stroke="${theme.accent}" stroke-opacity="0.45" stroke-width="1.5"/>
-    <text x="265" y="40" text-anchor="middle" font-family="${FONT}" font-size="13" font-weight="800" fill="#E2E8F0">${escXml(rightPill)}</text>
+    <rect x="214" y="19" width="102" height="30" rx="8" fill="#0F172A" stroke="${pillBorder}" stroke-opacity="${isPeeking && !snoozed ? "0.85" : "0.45"}" stroke-width="1.5"/>
+    <text x="265" y="40" text-anchor="middle" font-family="${FONT}" font-size="13" font-weight="800" fill="${pillText}">${escXml(rightPill)}</text>
     <text x="378" y="42" text-anchor="end" font-family="${MONO}" font-size="19" font-weight="800" fill="#CBD5E1">${posText}</text>
 
     <text x="24" y="96" font-family="${FONT}" font-size="26" font-weight="800" fill="#FFFFFF">${escXml(truncate(thread.title || "Untitled", 25))}</text>
@@ -607,8 +610,8 @@ export function renderThreadDialCanvas(
         : ""
     }
 
-    <text x="24" y="177" font-family="${FONT}" font-size="17" font-weight="600" fill="#94A3B8">${escXml(truncate(modelShort, 24))}</text>
-    <text x="378" y="177" text-anchor="end" font-family="${FONT}" font-size="14" font-weight="700" fill="${theme.accent}">PRESS: OPEN</text>
+    <text x="24" y="177" font-family="${FONT}" font-size="17" font-weight="600" fill="#94A3B8">${escXml(truncate(modelShort, isPeeking ? 18 : 24))}</text>
+    <text x="378" y="177" text-anchor="end" font-family="${FONT}" font-size="14" font-weight="700" fill="${isPeeking ? "#FBBF24" : theme.accent}">${isPeeking ? "OPEN · HOLD: LIVE" : "PRESS: OPEN"}</text>
   `
   );
 }

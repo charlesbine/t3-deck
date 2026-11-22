@@ -519,6 +519,8 @@ export class T3Store {
   focusedThreadId: string | null = null;
   private lastAppOpenedThreadId: string | null = null;
   private lastManualScrubAt = 0;
+  scrubIdleReturnMs = 20_000;
+  private scrubReturnTimer: NodeJS.Timeout | null = null;
   usageIndex = 0;
   promptDialIndex = 0;
   snoozeDialIndex = 0;
@@ -546,6 +548,9 @@ export class T3Store {
       this.overlays.delete(deviceId);
     } else {
       this.overlays.set(deviceId, next);
+    }
+    if (this.isPeekingAway()) {
+      this.scheduleScrubReturnTimer();
     }
   }
 
@@ -721,6 +726,7 @@ export class T3Store {
 
         if (switchedByOpen || switchedByVisitOnDifferentThread) {
           this.lastAppOpenedThreadId = thread.id;
+          this.clearScrubReturnTimer();
           if (this.focusedThreadId !== thread.id) {
             this.focusedThreadId = thread.id;
             this.clearPendingModel();
@@ -956,9 +962,74 @@ export class T3Store {
     return attention.find((t) => isApprovalRequest(t) || isQuestionRequest(t)) ?? null;
   }
 
+  getCurrentAppThread(): ThreadShell | null {
+    if (this.lastAppOpenedThreadId) {
+      const current = this.threads.get(this.lastAppOpenedThreadId);
+      if (current && !current.deletedAt && !current.archivedAt) {
+        return current;
+      }
+    }
+    return this.findMostRecentlyVisitedThread();
+  }
+
+  isPeekingAway(): boolean {
+    const current = this.getCurrentAppThread();
+    const focused = this.getFocusedThread();
+    return Boolean(current && focused && current.id !== focused.id);
+  }
+
+  clearScrubReturnTimer(): void {
+    if (this.scrubReturnTimer) {
+      clearTimeout(this.scrubReturnTimer);
+      this.scrubReturnTimer = null;
+    }
+  }
+
+  scheduleScrubReturnTimer(): void {
+    this.clearScrubReturnTimer();
+    if (this.scrubIdleReturnMs <= 0 || !this.isPeekingAway()) return;
+    this.scrubReturnTimer = setTimeout(() => {
+      this.scrubReturnTimer = null;
+      // Never yank focus away while the user has an interactive overlay open.
+      if (this.overlays.size > 0) {
+        this.scheduleScrubReturnTimer();
+        return;
+      }
+      this.returnToCurrentThread();
+    }, this.scrubIdleReturnMs);
+    this.scrubReturnTimer.unref?.();
+  }
+
+  markCurrentAppThread(threadId: string): void {
+    if (this.threads.has(threadId)) {
+      this.lastAppOpenedThreadId = threadId;
+      this.focusedThreadId = threadId;
+      this.clearScrubReturnTimer();
+      this.clearPendingModel();
+      this.emit();
+    }
+  }
+
+  returnToCurrentThread(): ThreadShell | null {
+    this.clearScrubReturnTimer();
+    const current = this.getCurrentAppThread();
+    if (!current) return null;
+    if (this.focusedThreadId !== current.id) {
+      this.focusedThreadId = current.id;
+      this.clearPendingModel();
+      this.emit();
+    }
+    return current;
+  }
+
   focusThread(threadId: string): void {
     this.focusedThreadId = threadId;
     this.clearPendingModel();
+    if (this.isPeekingAway()) {
+      this.scheduleScrubReturnTimer();
+    } else {
+      this.clearScrubReturnTimer();
+    }
     this.emit();
   }
 
@@ -973,6 +1044,11 @@ export class T3Store {
       this.focusedThreadId = next.id;
       this.lastManualScrubAt = Date.now();
       this.clearPendingModel();
+      if (this.isPeekingAway()) {
+        this.scheduleScrubReturnTimer();
+      } else {
+        this.clearScrubReturnTimer();
+      }
       this.emit();
     }
     return next;

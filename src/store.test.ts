@@ -1420,3 +1420,63 @@ test("T3 native Voice PCM framing, Float32 sanitization, and Voice STT overlay a
   assert.ok(renderOverlayKeySvg(store, 1, 1, mixed2)!.includes("CANCEL"));
   assert.equal(renderOverlayKeySvg(store, 2, 0, mixed2), null);
 });
+
+test("Dial 1 peeking supports immediate returnToCurrentThread and idle auto-return (paused during overlays)", async () => {
+  const store = new T3Store();
+  store.scrubIdleReturnMs = 30;
+  store.setConnection("connected");
+
+  const tLive = makeThread({
+    id: "t-live",
+    title: "Live Thread",
+    opens: { openedAt: 5_000 }
+  });
+  const tOther = makeThread({
+    id: "t-other",
+    title: "Other Thread",
+    opens: { openedAt: 1_000 }
+  });
+  store.applyShellSnapshot(
+    [{ id: "p-1", title: "lab", workspaceRoot: "/dev/lab" }],
+    [tLive, tOther],
+    false
+  );
+
+  assert.equal(store.getFocusedThread()?.id, "t-live");
+  assert.equal(store.isPeekingAway(), false);
+
+  // Scrub Dial 1 to peek at the other thread
+  store.stepFocus(1);
+  assert.equal(store.getFocusedThread()?.id, "t-other");
+  assert.equal(store.isPeekingAway(), true);
+
+  // Dial 1 canvas reflects PEEKING + HOLD: LIVE hint
+  const peekingSvg = renderThreadDialCanvas(tOther, "lab", "active", 1, 2, true, undefined, true);
+  assert.ok(peekingSvg.includes("PEEKING"));
+  assert.ok(peekingSvg.includes("HOLD: LIVE"));
+
+  // Press & hold Dial 1 snaps back immediately
+  store.returnToCurrentThread();
+  assert.equal(store.getFocusedThread()?.id, "t-live");
+  assert.equal(store.isPeekingAway(), false);
+
+  // Scrub again with an overlay open -> idle timer must NOT yank focus away
+  store.stepFocus(1);
+  assert.equal(store.getFocusedThread()?.id, "t-other");
+  store.openPromptsOverlay(5);
+  await new Promise((r) => setTimeout(r, 55));
+  assert.equal(store.getFocusedThread()?.id, "t-other");
+
+  // Close overlay -> idle timer returns to current thread cleanly
+  store.closeOverlay();
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(store.getFocusedThread()?.id, "t-live");
+  assert.equal(store.isPeekingAway(), false);
+
+  // Opening a peeked thread promotes it to current (no snap-back)
+  store.stepFocus(1);
+  store.markCurrentAppThread("t-other");
+  assert.equal(store.isPeekingAway(), false);
+  await new Promise((r) => setTimeout(r, 55));
+  assert.equal(store.getFocusedThread()?.id, "t-other");
+});
