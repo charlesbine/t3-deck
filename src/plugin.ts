@@ -53,6 +53,7 @@ import {
   handleOverlayDialRotate,
   handleOverlayDialTapOrPress,
   handleOverlayKeyPress,
+  isFullGridPickerOverlay,
   keySlotForCoords,
   renderOverlayDialSvg,
   renderOverlayKeySvg,
@@ -214,7 +215,34 @@ const surfaceCallbacks: SurfaceDispatchCallbacks = {
 function geometryForAction(actionObj: {
   device?: { id?: string; type?: number; size?: { columns?: number; rows?: number } };
 }): SurfaceGeometry {
-  return geometryFromDevice(actionObj.device);
+  const base = geometryFromDevice(actionObj.device);
+  const ov = store.getOverlay(base.deviceId);
+  if (ov.kind === "none") return base;
+
+  // Discover all currently visible T3 Deck keys on this device so mixed pages (e.g. 3 T3 buttons
+  // next to Spotify/OBS) AND XL / Plus XL Fleet Walls work seamlessly!
+  const visibleSlots = new Set<number>();
+  const isLargeFleetDeck = base.cols >= 8 && base.rows >= 4;
+  const fullGridPicker = isFullGridPickerOverlay(ov.kind);
+
+  for (const refresher of allRefreshers) {
+    const isSlotWall = refresher === threadSlotAction;
+    refresher.actions.forEach((a) => {
+      if (!a.isKey() || !a.coordinates) return;
+      if ((a.device?.id || "default") !== base.deviceId) return;
+      // On XL / Plus XL focused overlays, keep right-hand Thread Slot Fleet Wall (col >= 4) live!
+      if (isLargeFleetDeck && !fullGridPicker && isSlotWall && a.coordinates.column >= 4) {
+        return;
+      }
+      visibleSlots.add(a.coordinates.row * base.cols + a.coordinates.column);
+    });
+  }
+
+  const sorted = Array.from(visibleSlots).sort((a, b) => a - b);
+  if (sorted.length > 0 && sorted.length < base.cols * base.rows) {
+    return { ...base, activeKeySlots: sorted };
+  }
+  return base;
 }
 
 function keySlot(
@@ -257,9 +285,14 @@ function renderDialSurface(dial: DialAction, baseSvg: () => string): Promise<voi
 
 function routeOverlayKeyDown(ev: KeyDownEvent): boolean {
   const geom = geometryForAction(ev.action);
-  if (store.getOverlay(geom.deviceId).kind === "none") return false;
+  const ov = store.getOverlay(geom.deviceId);
+  if (ov.kind === "none") return false;
   if (!ev.action.isKey() || !ev.action.coordinates) return false;
   const { column, row } = ev.action.coordinates;
+  const fullSlot = row * geom.cols + column;
+  if (geom.activeKeySlots && !geom.activeKeySlots.includes(fullSlot)) {
+    return false; // Key sits outside overlay zone (e.g. Live Fleet Wall on XL/Plus XL)
+  }
   pressTracker.down(ev.action.id, async () => {
     try {
       await handleOverlayKeyPress(store, column, row, true, surfaceCallbacks, geom);
@@ -274,9 +307,14 @@ function routeOverlayKeyDown(ev: KeyDownEvent): boolean {
 function routeOverlayKeyUp(ev: KeyUpEvent): boolean {
   if (pressTracker.consumeLongRelease(ev.action.id)) return true;
   const geom = geometryForAction(ev.action);
-  if (store.getOverlay(geom.deviceId).kind === "none") return false;
+  const ov = store.getOverlay(geom.deviceId);
+  if (ov.kind === "none") return false;
   if (!ev.action.isKey() || !ev.action.coordinates) return false;
   const { column, row } = ev.action.coordinates;
+  const fullSlot = row * geom.cols + column;
+  if (geom.activeKeySlots && !geom.activeKeySlots.includes(fullSlot)) {
+    return false; // Key sits outside overlay zone (e.g. Live Fleet Wall on XL/Plus XL)
+  }
   pressTracker.up(ev.action.id, async () => {
     try {
       await handleOverlayKeyPress(store, column, row, false, surfaceCallbacks, geom);

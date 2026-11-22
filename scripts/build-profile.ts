@@ -14,6 +14,7 @@ interface ActionDef {
   name: string;
   uuid: string;
   settings?: Record<string, unknown>;
+  plugin?: { Name: string; UUID: string; Version: string };
 }
 
 interface PageSpec {
@@ -50,7 +51,17 @@ const A = {
   thread: { name: "Thread Navigator", uuid: `${PLUGIN_UUID}.thread-dial` },
   model: { name: "Model & Provider", uuid: `${PLUGIN_UUID}.model-dial` },
   mode: { name: "Mode & Effort", uuid: `${PLUGIN_UUID}.mode-dial` },
-  usage: { name: "Usage Radar", uuid: `${PLUGIN_UUID}.usage-dial` }
+  usage: { name: "Usage Radar", uuid: `${PLUGIN_UUID}.usage-dial` },
+  nextPage: {
+    name: "Next Page",
+    uuid: "com.elgato.streamdeck.page.next",
+    plugin: { Name: "Pages", UUID: "com.elgato.streamdeck.page", Version: "1.0" }
+  },
+  prevPage: {
+    name: "Previous Page",
+    uuid: "com.elgato.streamdeck.page.previous",
+    plugin: { Name: "Pages", UUID: "com.elgato.streamdeck.page", Version: "1.0" }
+  }
 };
 
 function makeAction(actionId: string, def: ActionDef) {
@@ -58,7 +69,7 @@ function makeAction(actionId: string, def: ActionDef) {
     ActionID: actionId,
     LinkedTitle: false,
     Name: def.name,
-    Plugin: PLUGIN_META,
+    Plugin: def.plugin ?? PLUGIN_META,
     Resources: null,
     Settings: def.settings ?? {},
     State: 0,
@@ -132,16 +143,16 @@ const plusSpec: DeviceProfileSpec = {
 function plusXlKeypad(): Record<string, ActionDef> {
   const map: Record<string, ActionDef> = {
     ...core8Keypad(),
-    // Row 2 cols 0..3: 4 quick-action prompt buttons
+    // Row 2 cols 0..3: 4 dev workflow quick-prompts
     "0,2": A.prompt("RUN TESTS", "Run the full test suite and fix any failures."),
     "1,2": A.prompt("COMMIT & PR", "Commit these changes with a clear message and open a PR."),
     "2,2": A.prompt("REVIEW DIFF", "Review your git diff critically and check for edge cases."),
     "3,2": A.prompt("FIX CI", "Inspect the failing CI checks and fix them."),
-    // Row 3 cols 0..3: keypad shortcuts for Thread, Model, Mode, Usage (plus dials below)
-    "0,3": A.thread,
-    "1,3": A.model,
-    "2,3": A.mode,
-    "3,3": A.usage
+    // Row 3 cols 0..3: 4 extra one-tap prompts (no redundancy with Dials 1..4 right below!)
+    "0,3": A.prompt("IMPLEMENT", "Implement the proposed plan cleanly."),
+    "1,3": A.prompt("EXPLAIN", "Explain what you changed and why, concisely."),
+    "2,3": A.prompt("FIX TYPES", "Run typecheck and fix any TypeScript errors."),
+    "3,3": A.prompt("STATUS", "Give me a quick status summary of what's done and what's left.")
   };
   // Right 5x4 Fleet Wall (cols 4..8, rows 0..3 = 20 live Thread Slots!)
   for (let row = 0; row < 4; row++) {
@@ -273,7 +284,7 @@ const neoSpec: DeviceProfileSpec = {
   ]
 };
 
-// 6. Stream Deck Mini (3x2 = 6 keys, 2 pages: Triage/Cockpit + Thread Actions)
+// 6. Stream Deck Mini (3x2 = 6 keys, 2 pages with built-in Elgato Next/Prev Page buttons!)
 const miniSpec: DeviceProfileSpec = {
   fileName: "t3-deck-mini.streamDeckProfile",
   profileName: "T3 Deck (Mini)",
@@ -291,7 +302,7 @@ const miniSpec: DeviceProfileSpec = {
         "2,0": A.stop,
         "0,1": A.thread,
         "1,1": A.model,
-        "2,1": A.mode
+        "2,1": A.nextPage
       }
     },
     {
@@ -299,10 +310,10 @@ const miniSpec: DeviceProfileSpec = {
       keypad: {
         "0,0": A.newChat,
         "1,0": A.prompt("CONTINUE", "Continue"),
-        "2,0": A.settle,
-        "0,1": A.open,
-        "1,1": A.snooze,
-        "2,1": A.usage
+        "2,0": A.mode,
+        "0,1": A.snooze,
+        "1,1": A.usage,
+        "2,1": A.prevPage
       }
     }
   ]

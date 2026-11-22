@@ -14,6 +14,8 @@ import {
   handleOverlayKeyPress,
   itemIndexForSlot,
   renderCompleteDeckSvgs,
+  renderOverlayDialSvg,
+  renderOverlayKeySvg,
   usesVirtualTopBanner,
   type SurfaceDispatchCallbacks
 } from "./surface.js";
@@ -1167,4 +1169,118 @@ test("multi-device geometry adapts across Plus XL, MK.2, XL, Neo, and Mini with 
   store.markRequestResolvedLocally("t-multi-dev", "req-1");
   assert.equal(store.getOverlay(mk2.deviceId).kind, "none");
   assert.equal(store.getOverlay(mini.deviceId).kind, "none");
+});
+
+test("mixed-page overlays map cleanly onto sparse T3 keys and keep XL / Plus XL Fleet Wall live", async () => {
+  const store = new T3Store();
+  store.setConnection("connected");
+  const t = makeThread({
+    id: "t-mix",
+    projectId: "p-1",
+    title: "Mix Page Task",
+    pendingRuntimeRequest: { id: "req-mix", kind: "command", createdAt: "2026-11-22T10:00:00Z" }
+  });
+  store.applyShellSnapshot([{ id: "p-1", title: "lab", workspaceRoot: "/tmp/lab" }], [t], false);
+  store.applyThreadProjection("t-mix", {
+    runtimeRequests: [
+      {
+        id: "req-mix",
+        nodeId: "n1",
+        kind: "command",
+        status: "pending",
+        responseCapability: { type: "live" },
+        createdAt: "2026-11-22T10:00:00Z"
+      }
+    ],
+    turnItems: [
+      {
+        id: "ti-mix",
+        type: "approval_request",
+        requestId: "req-mix",
+        requestKind: "command",
+        prompt: "npm test"
+      }
+    ]
+  });
+
+  const approved: string[] = [];
+  const cb: SurfaceDispatchCallbacks = {
+    approveRequest: async (tid, rid, dec) => {
+      approved.push(`${tid}:${rid}:${dec}`);
+    },
+    respondToUserInput: async () => {},
+    dismissUserInput: async () => {},
+    sendPrompt: async () => {},
+    snoozeThreadUntil: async () => {},
+    unsnoozeThread: async () => {},
+    settleToggle: async () => {},
+    pinToggle: async () => {},
+    markThreadUnread: async () => {},
+    interruptOrStop: async () => {},
+    createAndOpenThread: async () => {},
+    openThread: () => {},
+    openUrl: () => {},
+    resync: async () => {}
+  };
+
+  // 1. Mixed 4x2 page: Spotify/OBS occupy slots 0..4; ONLY 3 T3 buttons sit at bottom-right (slots 5, 6, 7)
+  const mixed3 = {
+    ...geometryFromDevice({ id: "dev-mix3", type: 9, size: { columns: 4, rows: 2 } }),
+    activeKeySlots: [5, 6, 7]
+  };
+  store.openApprovalOverlay("t-mix", 6, mixed3.deviceId);
+  assert.equal(renderOverlayKeySvg(store, 0, 0, mixed3), null); // Spotify key untouched
+  assert.ok(renderOverlayKeySvg(store, 1, 1, mixed3)!.includes("BACK")); // slot 5
+  assert.ok(renderOverlayKeySvg(store, 2, 1, mixed3)!.includes("APPROVE")); // slot 6
+  assert.ok(renderOverlayKeySvg(store, 3, 1, mixed3)!.includes("DENY")); // slot 7
+
+  // Pressing Spotify key returns false; pressing slot 6 (col 2, row 1) approves cleanly!
+  assert.equal(await handleOverlayKeyPress(store, 0, 0, false, cb, mixed3), false);
+  assert.equal(await handleOverlayKeyPress(store, 2, 1, false, cb, mixed3), true);
+  assert.equal(approved[0], "t-mix:req-mix:accept");
+
+  // 2. XL (8x4) and Plus XL (9x4 + 6 dials) zone-scoped approval overlays keep right-hand Fleet Wall live!
+  const t2 = makeThread({
+    id: "t-xl",
+    projectId: "p-1",
+    title: "XL Task",
+    pendingRuntimeRequest: { id: "req-xl", kind: "command", createdAt: "2026-11-22T10:01:00Z" }
+  });
+  store.applyThreadUpdated(t2, "active");
+  store.applyThreadProjection("t-xl", {
+    runtimeRequests: [
+      {
+        id: "req-xl",
+        nodeId: "n2",
+        kind: "command",
+        status: "pending",
+        responseCapability: { type: "live" },
+        createdAt: "2026-11-22T10:01:00Z"
+      }
+    ],
+    turnItems: [
+      {
+        id: "ti-xl",
+        type: "approval_request",
+        requestId: "req-xl",
+        requestKind: "command",
+        prompt: "npm run build"
+      }
+    ]
+  });
+
+  const xl = geometryFromDevice({ id: "dev-xl-zone", type: 2, size: { columns: 8, rows: 4 } });
+  const pxl = geometryFromDevice({ id: "dev-pxl-zone", type: 13, size: { columns: 9, rows: 4 } });
+  store.openApprovalOverlay("t-xl", 1, xl.deviceId);
+  store.openApprovalOverlay("t-xl", 1, pxl.deviceId);
+
+  // Left zone handles approval; right Fleet Wall (col 4..7 / 4..8) stays untouched (returns null/false)!
+  assert.ok(renderOverlayKeySvg(store, 1, 1, xl)!.includes("APPROVE"));
+  assert.equal(renderOverlayKeySvg(store, 4, 0, xl), null);
+  assert.equal(await handleOverlayKeyPress(store, 4, 0, false, cb, xl), false);
+
+  assert.ok(renderOverlayKeySvg(store, 1, 0, pxl)!.includes("APPROVE"));
+  assert.equal(renderOverlayKeySvg(store, 4, 0, pxl), null);
+  assert.equal(renderOverlayKeySvg(store, 0, 2, pxl), null);
+  assert.ok(renderOverlayDialSvg(store, 5, pxl)!.includes("FLEET QUEUE"));
 });

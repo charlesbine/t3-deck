@@ -46,6 +46,7 @@ T3 Deck now adapts automatically to **every Elgato Stream Deck** — reading eac
 | **Mobile / Virtual / Studio / Galleon** | Dynamic (`device.size`) | Drag from sidebar | Automatically adapts grid pagination, `originSlot` `BACK` placement, and structured info cards |
 
 - **Dual-Controller Actions (`Keypad` + `Encoder`):** `Thread Navigator`, `Model & Provider`, `Mode & Effort`, `Usage Radar`, `Send / Steer Prompt`, and `Snooze / Sync` work seamlessly on **both** LCD keys and rotary dials.
+- **Mix-and-Match Pages & Live Fleet Zones:** Drop just 1–7 T3 Deck keys onto a page next to Spotify, OBS, or Zoom and overlays automatically map onto *only* your visible T3 keys. On **XL** and **Plus XL**, focused overlays stay scoped to the left control cluster so your right-hand **Live Fleet Wall** stays live and clickable (with real-time queue counts on Plus XL Dials 5–6).
 - **Keypad-Native Pickers:** Tapping **Model & Provider** on a keypad-only deck opens a full-grid **Model Picker** (`★ FAVS ↔ ALL` + 1-tap apply); tapping **Mode & Effort** opens a 1-tap **Permission + Plan/Code + Reasoning Effort** grid.
 - **Auto-Numbered Fleet Walls:** Placing multiple **Thread Slot** keys on any device automatically numbers them `#1..#N` in reading order — zero manual slot index config.
 

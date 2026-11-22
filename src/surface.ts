@@ -634,6 +634,126 @@ export function getActivePanoramicFrame(
   }
 }
 
+export function isFullGridPickerOverlay(kind: DeckOverlay["kind"]): boolean {
+  return kind === "fleet" || kind === "new-chat-project" || kind === "model-picker";
+}
+
+/**
+ * Computes which key slots belong to an overlay on `geom`:
+ * - On big decks (XL 8x4, Plus XL 9x4), scopes focused overlays to the left control cluster
+ *   (`cols 0..3`, rows `0..1` on Plus XL or `0..2` on XL) so the right-hand Live Fleet Wall stays live!
+ */
+export function resolveDefaultZoneSlots(
+  geom: SurfaceGeometry,
+  kind: DeckOverlay["kind"]
+): number[] | undefined {
+  if (geom.activeKeySlots && geom.activeKeySlots.length > 0) return geom.activeKeySlots;
+  if (isFullGridPickerOverlay(kind)) return undefined;
+  if (geom.cols >= 8 && geom.rows >= 4) {
+    // Plus XL (has touch strip): left 4x2 control zone (8 keys) — matches Stream Deck+ muscle memory!
+    // XL (no touch strip): left 4x3 control zone (12 keys: Row 0 = 4 info cards, Rows 1-2 = 8 controls)!
+    const zoneRows = geom.stripCols > 0 ? 2 : 3;
+    const slots: number[] = [];
+    for (let r = 0; r < zoneRows; r++) {
+      for (let c = 0; c < 4; c++) {
+        slots.push(r * geom.cols + c);
+      }
+    }
+    return slots;
+  }
+  return undefined;
+}
+
+interface SubRect {
+  minCol: number;
+  minRow: number;
+  cols: number;
+  rows: number;
+}
+
+/** Checks if `slots` form a complete contiguous rectangle of at least 4x2 keys. */
+function detectContiguousRect(slots: number[], fullCols: number): SubRect | null {
+  if (slots.length < 8) return null;
+  let minCol = Infinity;
+  let maxCol = -Infinity;
+  let minRow = Infinity;
+  let maxRow = -Infinity;
+  const set = new Set(slots);
+  for (const s of slots) {
+    const c = s % fullCols;
+    const r = Math.floor(s / fullCols);
+    if (c < minCol) minCol = c;
+    if (c > maxCol) maxCol = c;
+    if (r < minRow) minRow = r;
+    if (r > maxRow) maxRow = r;
+  }
+  const cols = maxCol - minCol + 1;
+  const rows = maxRow - minRow + 1;
+  if (cols < 4 || rows < 2) return null;
+  if (set.size !== cols * rows) return null;
+  return { minCol, minRow, cols, rows };
+}
+
+function renderCompactApprovalInfoCard(
+  store: T3Store,
+  deviceId: string
+): string {
+  const { item, index, total } = store.getActiveOverlayApproval(deviceId);
+  if (!item) {
+    return renderInfoCardKey({
+      accent: "#38BDF8",
+      bgTop: "#0B243E",
+      topLabel: "INSPECT",
+      lines: ["No pending"],
+      center: true
+    });
+  }
+  const accent = item.dangerous ? "#F43F5E" : "#38BDF8";
+  const bgTop = item.dangerous ? "#3B0A17" : "#0B243E";
+  const cmd = item.prompt ? `$ ${item.prompt}` : item.reason ?? item.threadTitle;
+  const lines = chunkTextForKeyCards(cmd, 14, 3, 1)[0] ?? [item.threadTitle];
+  return renderInfoCardKey({
+    accent,
+    bgTop,
+    topLabel: item.dangerous
+      ? `⚠ DANGER ${index + 1}/${total}`
+      : `${index + 1}/${total} · ${(item.subagentTitle ?? item.projectName).toUpperCase()}`,
+    lines,
+    footer: "TAP: OPEN T3",
+    mono: Boolean(item.prompt),
+    glow: item.dangerous
+  });
+}
+
+function buildPlusXlRightStripPanel(store: T3Store, accent: string): string {
+  const stats = store.getFleetStats();
+  const focused = store.getFocusedThread();
+  const proj = focused ? store.getProjectName(focused.projectId) : "T3 CODE";
+  const esc = (s: string) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const trunc = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+  const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif";
+  const MONO = "'SF Mono', Menlo, Monaco, monospace";
+  return `
+    <text x="1632" y="42" font-family="${FONT}" font-size="16" font-weight="800" fill="${accent}" letter-spacing="0.8">FLEET QUEUE · ${esc(trunc(proj.toUpperCase(), 20))}</text>
+    <text x="2370" y="42" text-anchor="end" font-family="${MONO}" font-size="15" font-weight="700" fill="#94A3B8">LIVE WALL ACTIVE</text>
+
+    <rect x="1632" y="64" width="170" height="62" rx="10" fill="#0E223A" stroke="#38BDF8" stroke-width="1.8"/>
+    <text x="1717" y="102" text-anchor="middle" font-family="${MONO}" font-size="24" font-weight="800" fill="#38BDF8">▶ ${stats.running}</text>
+
+    <rect x="1818" y="64" width="170" height="62" rx="10" fill="#2E1C06" stroke="#F59E0B" stroke-width="1.8"/>
+    <text x="1903" y="102" text-anchor="middle" font-family="${MONO}" font-size="24" font-weight="800" fill="#F59E0B">! ${stats.approvals}</text>
+
+    <rect x="2004" y="64" width="170" height="62" rx="10" fill="#271040" stroke="#C084FC" stroke-width="1.8"/>
+    <text x="2089" y="102" text-anchor="middle" font-family="${MONO}" font-size="24" font-weight="800" fill="#C084FC">? ${stats.questions}</text>
+
+    <rect x="2190" y="64" width="178" height="62" rx="10" fill="#300D17" stroke="#FB7185" stroke-width="1.8"/>
+    <text x="2279" y="102" text-anchor="middle" font-family="${MONO}" font-size="24" font-weight="800" fill="#FB7185">✕ ${stats.failed}</text>
+
+    <text x="1632" y="166" font-family="${FONT}" font-size="15" font-weight="700" fill="#CBD5E1">${esc(trunc(focused?.title ?? "Tap any live Fleet Wall tile to jump", 54))}</text>
+  `;
+}
+
 /** Renders the sliced 400x200 dial SVG for column `col` (`0..stripCols-1`) when an overlay is active. */
 export function renderOverlayDialSvg(
   store: T3Store,
@@ -642,7 +762,9 @@ export function renderOverlayDialSvg(
 ): string | null {
   const frame = getActivePanoramicFrame(store, geom);
   if (!frame) return null;
-  return slicePanoramicFrame(frame, col, Math.max(4, geom.stripCols));
+  const extraRight =
+    geom.stripCols > 4 ? buildPlusXlRightStripPanel(store, frame.accent) : undefined;
+  return slicePanoramicFrame(frame, col, Math.max(4, geom.stripCols), extraRight);
 }
 
 function emptyOverlayTile(label = ""): string {
@@ -768,6 +890,204 @@ export function renderOverlayKeySvg(
   const ov = store.getOverlay(geom.deviceId);
   if (ov.kind === "none") return null;
 
+  const fullSlot = row * geom.cols + col;
+  const zoneSlots = resolveDefaultZoneSlots(geom, ov.kind);
+  if (zoneSlots) {
+    const localIdx = zoneSlots.indexOf(fullSlot);
+    if (localIdx === -1) {
+      // Key sits outside the active overlay zone (e.g. Live Fleet Wall on XL / Plus XL) — keep base key!
+      return null;
+    }
+    const rect = detectContiguousRect(zoneSlots, geom.cols);
+    if (rect) {
+      // Contiguous sub-grid (e.g. Plus XL left 4x2 or XL left 4x3): render natively in local rect coordinates!
+      const localOriginCol = (ov.originSlot % geom.cols) - rect.minCol;
+      const localOriginRow = Math.floor(ov.originSlot / geom.cols) - rect.minRow;
+      const localOriginSlot =
+        localOriginCol >= 0 &&
+        localOriginCol < rect.cols &&
+        localOriginRow >= 0 &&
+        localOriginRow < rect.rows
+          ? localOriginRow * rect.cols + localOriginCol
+          : 0;
+      const localGeom: SurfaceGeometry = {
+        deviceId: geom.deviceId,
+        deviceType: geom.deviceType,
+        cols: rect.cols,
+        rows: rect.rows,
+        stripCols: geom.stripCols
+      };
+      return renderOverlayKeySvgInternal(
+        store,
+        ov,
+        col - rect.minCol,
+        row - rect.minRow,
+        localGeom,
+        localOriginSlot
+      );
+    }
+
+    // Sparse / mixed page (1..7 T3 keys scattered alongside Spotify/OBS/Zoom!):
+    return renderSparseMixedOverlayKey(store, ov, localIdx, zoneSlots, geom.deviceId);
+  }
+
+  return renderOverlayKeySvgInternal(store, ov, col, row, geom, ov.originSlot);
+}
+
+/**
+ * Renders overlays onto arbitrary sparse T3 Deck keys on a mixed page (e.g. 1..7 T3 buttons
+ * next to Spotify/OBS/Zoom) so BACK, APPROVE, DENY, and options ALWAYS fit on the visible T3 keys.
+ */
+function renderSparseMixedOverlayKey(
+  store: T3Store,
+  ov: Exclude<DeckOverlay, { kind: "none" }>,
+  localIdx: number,
+  zoneSlots: number[],
+  deviceId: string
+): string | null {
+  const localCount = zoneSlots.length;
+  const originLocalIdx = Math.max(0, zoneSlots.indexOf(ov.originSlot));
+
+  if (ov.kind === "approval") {
+    const { item, index, total } = store.getActiveOverlayApproval(deviceId);
+    const canRespond = Boolean(item && item.responseCapability === "live");
+    if (localCount === 1) {
+      return renderOverlayActionKey({
+        topLabel: item?.dangerous ? "⚠ TAP: APPROVE" : "TAP: CONFIRM",
+        mainLabel: item?.dangerous ? "DANGER OK?" : "APPROVE",
+        subLabel: "HOLD: CANCEL",
+        accent: item?.dangerous ? "#F43F5E" : "#10B981",
+        bgTop: item?.dangerous ? "#3B0A17" : "#0A2D20",
+        glyph: "check",
+        glow: canRespond,
+        disabled: !canRespond
+      });
+    }
+    if (localCount === 2) {
+      if (localIdx === 0) {
+        return renderOverlayActionKey({
+          topLabel: item?.dangerous ? "⚠ CAREFUL" : "CONFIRM",
+          mainLabel: "APPROVE",
+          subLabel: "HOLD: SESSION",
+          accent: item?.dangerous ? "#F59E0B" : "#10B981",
+          bgTop: item?.dangerous ? "#331D06" : "#0A2D20",
+          glyph: "check",
+          glow: canRespond,
+          disabled: !canRespond
+        });
+      }
+      return renderOverlayActionKey({
+        topLabel: "HOLD: BACK",
+        mainLabel: "DENY",
+        subLabel: "REJECT REQ",
+        accent: "#FB7185",
+        bgTop: "#3B0D18",
+        glyph: "cross",
+        glow: canRespond,
+        disabled: !canRespond
+      });
+    }
+    // 3..7 keys: 0=BACK, 1=APPROVE, 2=DENY, 3=4-line Info Card, 4=NEXT, 5=ALLOW ALL, 6=PREV
+    if (localIdx === 3) return renderCompactApprovalInfoCard(store, deviceId);
+    if (localIdx === 4) {
+      return renderOverlayActionKey({
+        topLabel: total > 1 ? `${index + 1}/${total}` : "QUEUE",
+        mainLabel: "NEXT",
+        subLabel: "CYCLE REQ",
+        accent: "#F59E0B",
+        bgTop: "#241706",
+        glyph: "next",
+        disabled: total <= 1
+      });
+    }
+    if (localIdx === 5) return renderApprovalActionSlot(store, 6, deviceId);
+    if (localIdx === 6) return renderApprovalActionSlot(store, 4, deviceId);
+    return renderApprovalActionSlot(store, localIdx, deviceId);
+  }
+
+  if (ov.kind === "question") {
+    const { item } = store.getActiveOverlayQuestion(deviceId);
+    const question = item?.questions[ov.questionIndex];
+    const options = question?.options ?? [];
+    const selected = question ? (ov.selectedByQuestionId[question.id] ?? []) : [];
+    if (localCount === 1) {
+      return renderOverlayActionKey({
+        topLabel: "QUESTION",
+        mainLabel: "OPEN T3",
+        subLabel: "HOLD: CLOSE",
+        accent: "#C084FC",
+        bgTop: "#271040",
+        glyph: "open",
+        glow: true
+      });
+    }
+    if (localIdx === 0) {
+      return renderOverlayActionKey({
+        topLabel: "QUESTION",
+        mainLabel: "BACK",
+        subLabel: "CLOSE",
+        accent: "#94A3B8",
+        bgTop: "#151C2B",
+        glyph: "back"
+      });
+    }
+    if (localCount === 2 || localIdx === 1) {
+      return question?.multiSelect
+        ? renderOverlayActionKey({
+            topLabel: `${selected.length} PICKED`,
+            mainLabel: "SUBMIT",
+            subLabel: "SEND ANSWER",
+            accent: "#10B981",
+            bgTop: "#0A2B22",
+            glyph: "check",
+            glow: selected.length > 0,
+            disabled: selected.length === 0
+          })
+        : renderOverlayActionKey({
+            topLabel: "CUSTOM",
+            mainLabel: "OPEN T3",
+            subLabel: question?.header?.toUpperCase() ?? "VIEW FULL",
+            accent: "#38BDF8",
+            bgTop: "#0B243E",
+            glyph: "open",
+            disabled: !item
+          });
+    }
+    const optIdx = localIdx - 2;
+    const opt = options[ov.optionPage * Math.max(1, localCount - 2) + optIdx];
+    if (!opt) return emptyOverlayTile(`OPT ${optIdx + 1}`);
+    const isSelected = selected.includes(opt.label);
+    return renderOverlayActionKey({
+      topLabel: isSelected ? "SELECTED" : `OPT ${optIdx + 1}`,
+      mainLabel: opt.label.toUpperCase(),
+      subLabel: question?.multiSelect ? "TOGGLE" : "ANSWER",
+      accent: isSelected ? "#34D399" : "#C084FC",
+      bgTop: isSelected ? "#0A2B22" : "#271040",
+      glyph: isSelected ? "check" : "number",
+      glyphText: String(optIdx + 1),
+      glow: true
+    });
+  }
+
+  // Dynamic submenus on mixed pages: treat the visible T3 keys as a virtual 1xN strip!
+  const virtualGeom: SurfaceGeometry = {
+    deviceId,
+    deviceType: 9,
+    cols: localCount,
+    rows: 1,
+    stripCols: 0
+  };
+  return renderOverlayKeySvgInternal(store, ov, localIdx, 0, virtualGeom, originLocalIdx);
+}
+
+function renderOverlayKeySvgInternal(
+  store: T3Store,
+  ov: DeckOverlay,
+  col: number,
+  row: number,
+  geom: SurfaceGeometry,
+  effectiveOriginSlot: number
+): string | null {
   const keyCount = geom.cols * geom.rows;
   const slot = row * geom.cols + col;
   const useBanner = usesVirtualTopBanner(geom, ov.kind);
@@ -778,40 +1098,23 @@ export function renderOverlayKeySvg(
     if (cardSvg) return cardSvg;
   }
 
-  // Remap body coordinates when Row 0 is a virtual banner
+  // Remap body coordinates when Row 0 is a structured info row
   const bodySlot = useBanner ? (row - 1) * geom.cols + col : slot;
   const bodyCount = useBanner ? (geom.rows - 1) * geom.cols : keyCount;
   const bodyOriginSlot = useBanner
-    ? ov.originSlot >= geom.cols
-      ? Math.min(bodyCount - 1, ov.originSlot - geom.cols)
+    ? effectiveOriginSlot >= geom.cols
+      ? Math.min(bodyCount - 1, effectiveOriginSlot - geom.cols)
       : 0
-    : Math.min(keyCount - 1, ov.originSlot);
+    : Math.min(keyCount - 1, effectiveOriginSlot);
 
   // ---- Approval Inspector ----
   if (ov.kind === "approval") {
-    // Compact 2-row keypad-only layout (Neo 4x2, Mini 3x2): put command/danger card directly in Slot 3!
+    // Compact 2-row keypad-only layout (Neo 4x2, Mini 3x2): put 4-line bezel-safe command card in Slot 3!
     if (geom.stripCols === 0 && !useBanner) {
       const { item, index, total } = store.getActiveOverlayApproval(geom.deviceId);
       const canRespond = Boolean(item && item.responseCapability === "live");
       if (slot === 3) {
-        return renderOverlayActionKey({
-          topLabel: item?.dangerous
-            ? "⚠ DANGER"
-            : total > 1
-              ? `${index + 1}/${total} INSPECT`
-              : "INSPECT",
-          mainLabel: item?.subagentTitle
-            ? item.subagentTitle.toUpperCase()
-            : item?.prompt
-              ? item.prompt.slice(0, 12).toUpperCase()
-              : "OPEN T3",
-          subLabel: item?.prompt ? item.prompt.slice(0, 16) : "TAP: OPEN T3",
-          accent: item?.dangerous ? "#F43F5E" : "#38BDF8",
-          bgTop: item?.dangerous ? "#3B0A17" : "#0B243E",
-          glyph: "open",
-          glow: Boolean(item?.dangerous),
-          disabled: !item
-        });
+        return renderCompactApprovalInfoCard(store, geom.deviceId);
       }
       if (keyCount <= 6) {
         // 3x2 Mini: 0=BACK, 1=APPROVE, 2=DENY, 3=INSPECT, 4=NEXT, 5=SESSION/ALWAYS
@@ -1535,7 +1838,7 @@ export function renderOverlayKeySvg(
 
 /**
  * Handles a short or long key press when an overlay is active on `geom`.
- * Returns `true` if handled by the overlay.
+ * Returns `true` if handled by the overlay, or `false` if this key sits outside the active overlay zone.
  */
 export async function handleOverlayKeyPress(
   store: T3Store,
@@ -1548,6 +1851,222 @@ export async function handleOverlayKeyPress(
   const ov = store.getOverlay(geom.deviceId);
   if (ov.kind === "none") return false;
 
+  const fullSlot = row * geom.cols + col;
+  const zoneSlots = resolveDefaultZoneSlots(geom, ov.kind);
+  if (zoneSlots) {
+    const localIdx = zoneSlots.indexOf(fullSlot);
+    if (localIdx === -1) {
+      // Outside the overlay zone (e.g. Live Fleet Wall on XL / Plus XL) -> let base action handle it!
+      return false;
+    }
+    const rect = detectContiguousRect(zoneSlots, geom.cols);
+    if (rect) {
+      const localOriginCol = (ov.originSlot % geom.cols) - rect.minCol;
+      const localOriginRow = Math.floor(ov.originSlot / geom.cols) - rect.minRow;
+      const localOriginSlot =
+        localOriginCol >= 0 &&
+        localOriginCol < rect.cols &&
+        localOriginRow >= 0 &&
+        localOriginRow < rect.rows
+          ? localOriginRow * rect.cols + localOriginCol
+          : 0;
+      const localGeom: SurfaceGeometry = {
+        deviceId: geom.deviceId,
+        deviceType: geom.deviceType,
+        cols: rect.cols,
+        rows: rect.rows,
+        stripCols: geom.stripCols
+      };
+      return handleOverlayKeyPressInternal(
+        store,
+        ov,
+        col - rect.minCol,
+        row - rect.minRow,
+        isLongPress,
+        cb,
+        localGeom,
+        localOriginSlot
+      );
+    }
+
+    return handleSparseMixedOverlayKeyPress(store, ov, localIdx, zoneSlots, isLongPress, cb, geom.deviceId);
+  }
+
+  return handleOverlayKeyPressInternal(store, ov, col, row, isLongPress, cb, geom, ov.originSlot);
+}
+
+async function handleSparseMixedOverlayKeyPress(
+  store: T3Store,
+  ov: Exclude<DeckOverlay, { kind: "none" }>,
+  localIdx: number,
+  zoneSlots: number[],
+  isLongPress: boolean,
+  cb: SurfaceDispatchCallbacks,
+  deviceId: string
+): Promise<boolean> {
+  const localCount = zoneSlots.length;
+  const originLocalIdx = Math.max(0, zoneSlots.indexOf(ov.originSlot));
+
+  if (ov.kind === "approval") {
+    const { item } = store.getActiveOverlayApproval(deviceId);
+    if (localCount === 1) {
+      if (isLongPress) {
+        store.closeOverlay(deviceId);
+        return true;
+      }
+      if (item && item.responseCapability === "live") {
+        await cb.approveRequest(item.threadId, item.requestId, "accept");
+        store.markRequestResolvedLocally(item.threadId, item.requestId);
+        store.setToast("approve", "APPROVED", "#10B981", 1100);
+      } else {
+        store.closeOverlay(deviceId);
+      }
+      return true;
+    }
+    if (localCount === 2) {
+      if (localIdx === 0) {
+        if (item && item.responseCapability === "live") {
+          await cb.approveRequest(
+            item.threadId,
+            item.requestId,
+            isLongPress ? "acceptForSession" : "accept"
+          );
+          store.markRequestResolvedLocally(item.threadId, item.requestId);
+          store.setToast("approve", isLongPress ? "SESSION OK" : "APPROVED", "#10B981", 1100);
+        }
+        return true;
+      }
+      if (isLongPress) {
+        store.closeOverlay(deviceId);
+        return true;
+      }
+      if (item && item.responseCapability === "live") {
+        await cb.approveRequest(item.threadId, item.requestId, "decline");
+        store.markRequestResolvedLocally(item.threadId, item.requestId);
+        store.setToast("stop", "DENIED", "#FB7185", 1100);
+      } else {
+        store.closeOverlay(deviceId);
+      }
+      return true;
+    }
+    // 3..7 keys: 0=BACK, 1=APPROVE, 2=DENY, 3=OPEN T3, 4=NEXT, 5=ALLOW ALL, 6=PREV
+    if (localIdx === 0) {
+      store.closeOverlay(deviceId);
+      return true;
+    }
+    if (localIdx === 1) {
+      if (item && item.responseCapability === "live") {
+        await cb.approveRequest(
+          item.threadId,
+          item.requestId,
+          isLongPress ? "acceptForSession" : "accept"
+        );
+        store.markRequestResolvedLocally(item.threadId, item.requestId);
+        store.setToast("approve", isLongPress ? "SESSION OK" : "APPROVED", "#10B981", 1100);
+      }
+      return true;
+    }
+    if (localIdx === 2) {
+      if (item && item.responseCapability === "live") {
+        await cb.approveRequest(item.threadId, item.requestId, "decline");
+        store.markRequestResolvedLocally(item.threadId, item.requestId);
+        store.setToast("stop", "DENIED", "#FB7185", 1100);
+      }
+      return true;
+    }
+    if (localIdx === 3) {
+      if (item) cb.openThread(item.threadId);
+      return true;
+    }
+    if (localIdx === 4) {
+      store.stepOverlayQueue(1, deviceId);
+      return true;
+    }
+    if (localIdx === 5) {
+      if (item && item.responseCapability === "live") {
+        const hasAlways = Boolean(item.options?.some((o) => o.decision === "acceptAlways"));
+        await cb.approveRequest(
+          item.threadId,
+          item.requestId,
+          hasAlways ? "acceptAlways" : "acceptForSession"
+        );
+        store.markRequestResolvedLocally(item.threadId, item.requestId);
+        store.setToast("approve", hasAlways ? "ALWAYS OK" : "SESSION OK", "#10B981", 1100);
+      }
+      return true;
+    }
+    if (localIdx === 6) {
+      store.stepOverlayQueue(-1, deviceId);
+      return true;
+    }
+    return true;
+  }
+
+  if (ov.kind === "question") {
+    const { item } = store.getActiveOverlayQuestion(deviceId);
+    if (localCount === 1) {
+      if (isLongPress) store.closeOverlay(deviceId);
+      else if (item) cb.openThread(item.threadId);
+      return true;
+    }
+    if (localIdx === 0) {
+      store.closeOverlay(deviceId);
+      return true;
+    }
+    if (localCount === 2 || localIdx === 1) {
+      const q = item?.questions[ov.questionIndex];
+      if (q?.multiSelect) {
+        const res = store.submitCurrentMultiSelectQuestion(deviceId);
+        if (res.readyToSubmit && res.threadId && res.requestId && res.answers) {
+          await cb.respondToUserInput(res.threadId, res.requestId, res.answers);
+          store.markRequestResolvedLocally(res.threadId, res.requestId);
+          store.setToast("approve", "ANSWERED", "#C084FC", 1100);
+        }
+      } else if (item) {
+        cb.openThread(item.threadId);
+      }
+      return true;
+    }
+    const optIdx = localIdx - 2;
+    const perPage = Math.max(1, localCount - 2);
+    const res = store.selectQuestionOption(optIdx, deviceId, perPage);
+    if (res.readyToSubmit && res.threadId && res.requestId && res.answers) {
+      await cb.respondToUserInput(res.threadId, res.requestId, res.answers);
+      store.markRequestResolvedLocally(res.threadId, res.requestId);
+      store.setToast("approve", "ANSWERED", "#C084FC", 1100);
+    }
+    return true;
+  }
+
+  const virtualGeom: SurfaceGeometry = {
+    deviceId,
+    deviceType: 9,
+    cols: localCount,
+    rows: 1,
+    stripCols: 0
+  };
+  return handleOverlayKeyPressInternal(
+    store,
+    ov,
+    localIdx,
+    0,
+    isLongPress,
+    cb,
+    virtualGeom,
+    originLocalIdx
+  );
+}
+
+async function handleOverlayKeyPressInternal(
+  store: T3Store,
+  ov: DeckOverlay,
+  col: number,
+  row: number,
+  isLongPress: boolean,
+  cb: SurfaceDispatchCallbacks,
+  geom: SurfaceGeometry,
+  effectiveOriginSlot: number
+): Promise<boolean> {
   const keyCount = geom.cols * geom.rows;
   const slot = row * geom.cols + col;
   const useBanner = usesVirtualTopBanner(geom, ov.kind);
@@ -1598,10 +2117,10 @@ export async function handleOverlayKeyPress(
   const bodySlot = useBanner ? (row - 1) * geom.cols + col : slot;
   const bodyCount = useBanner ? (geom.rows - 1) * geom.cols : keyCount;
   const bodyOriginSlot = useBanner
-    ? ov.originSlot >= geom.cols
-      ? Math.min(bodyCount - 1, ov.originSlot - geom.cols)
+    ? effectiveOriginSlot >= geom.cols
+      ? Math.min(bodyCount - 1, effectiveOriginSlot - geom.cols)
       : 0
-    : Math.min(keyCount - 1, ov.originSlot);
+    : Math.min(keyCount - 1, effectiveOriginSlot);
 
   if (ov.kind === "approval") {
     const { item } = store.getActiveOverlayApproval(geom.deviceId);
@@ -2331,18 +2850,6 @@ export function renderCompleteDeckSvgs(
   const keys: string[] = [];
   const dials: string[] = [];
 
-  if (store.getOverlay(geom.deviceId).kind !== "none") {
-    for (let row = 0; row < geom.rows; row++) {
-      for (let col = 0; col < geom.cols; col++) {
-        keys.push(renderOverlayKeySvg(store, col, row, geom) ?? "");
-      }
-    }
-    for (let col = 0; col < geom.stripCols; col++) {
-      dials.push(renderOverlayDialSvg(store, col, geom) ?? "");
-    }
-    return { keys, dials };
-  }
-
   const connected = store.connectionState === "connected";
   const focused = store.getFocusedThread();
   const approval = store.getActionableApprovalThread();
@@ -2386,25 +2893,23 @@ export function renderCompleteDeckSvgs(
     renderUsageKey(card, usageIdx, usageTotal, connected, store.getToast("usage-dial"))
   ];
 
+  const baseKeys: string[] = [];
   if (geom.cols === 4 && geom.rows === 2) {
-    keys.push(...core8);
+    baseKeys.push(...core8);
   } else if (geom.cols === 3 && geom.rows === 2) {
-    // Mini (3x2) default Page 1: Fleet, Approve, Stop, Thread, Model, Mode
-    keys.push(core8[0]!, core8[1]!, core8[2]!, cockpit4Keys[0]!, cockpit4Keys[1]!, cockpit4Keys[2]!);
+    baseKeys.push(core8[0]!, core8[1]!, core8[2]!, cockpit4Keys[0]!, cockpit4Keys[1]!, cockpit4Keys[2]!);
   } else {
-    // Generic layout preview for MK.2 (5x3), XL (8x4), Plus XL (9x4):
-    // Core 8 in (0..3, 0..1), Cockpit 4 in (0..3, 2) if rows >= 3, Thread Slots elsewhere
     const threads = store.getFilteredThreads();
     let slotCounter = 0;
     for (let row = 0; row < geom.rows; row++) {
       for (let col = 0; col < geom.cols; col++) {
         if (col < 4 && row < 2) {
-          keys.push(core8[row * 4 + col]!);
+          baseKeys.push(core8[row * 4 + col]!);
         } else if (col < 4 && row === 2) {
-          keys.push(cockpit4Keys[col]!);
+          baseKeys.push(cockpit4Keys[col]!);
         } else {
           const t = threads[slotCounter] ?? null;
-          keys.push(
+          baseKeys.push(
             renderThreadSlotKey(
               slotCounter + 1,
               t,
@@ -2417,6 +2922,21 @@ export function renderCompleteDeckSvgs(
       }
     }
   }
+
+  if (store.getOverlay(geom.deviceId).kind !== "none") {
+    for (let row = 0; row < geom.rows; row++) {
+      for (let col = 0; col < geom.cols; col++) {
+        const ovSvg = renderOverlayKeySvg(store, col, row, geom);
+        keys.push(ovSvg ?? baseKeys[row * geom.cols + col] ?? "");
+      }
+    }
+    for (let col = 0; col < geom.stripCols; col++) {
+      dials.push(renderOverlayDialSvg(store, col, geom) ?? "");
+    }
+    return { keys, dials };
+  }
+
+  keys.push(...baseKeys);
 
   if (geom.stripCols > 0) {
     const defSnooze = store.getDefaultSnoozePreset();
