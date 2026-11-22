@@ -1095,12 +1095,14 @@ test("multi-device geometry adapts across Plus XL, MK.2, XL, Neo, and Mini with 
   assert.equal(store.getOverlay(plusXl.deviceId).kind, "model-picker");
   assert.equal(store.getOverlay(mini.deviceId).kind, "none");
 
-  // MK.2 renders 15 keys with Row 0 (cols 0..4) as a 720px stitched virtual banner!
+  // MK.2 renders 15 keys with Row 0 (cols 0..4) as bezel-safe self-contained info cards (zero split letters!)
   const mk2Deck = renderCompleteDeckSvgs(store, undefined, undefined, mk2);
   assert.equal(mk2Deck.keys.length, 15);
   assert.equal(mk2Deck.dials.length, 0);
-  assert.ok(mk2Deck.keys[0]!.includes('width="712"'), "MK.2 Row 0 uses 5-key 720px virtual banner");
+  assert.ok(mk2Deck.keys[0]!.includes('viewBox="0 0 144 144"'), "MK.2 Row 0 uses self-contained 144x144 cards");
   assert.ok(mk2Deck.keys[0]!.includes("DANGER"));
+  assert.ok(mk2Deck.keys[1]!.includes("Deploy Worker"));
+  assert.ok(mk2Deck.keys[2]!.includes("COMMAND") && mk2Deck.keys[2]!.includes("rm -rf"));
   assert.ok(mk2Deck.keys[5]!.includes("BACK")); // Row 1 Col 0 = BACK
   assert.ok(mk2Deck.keys[6]!.includes("APPROVE")); // Row 1 Col 1 = APPROVE
 

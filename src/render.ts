@@ -1603,66 +1603,115 @@ export function renderOverlayActionKey(opts: {
 }
 
 // ============================================================
-// MULTI-DEVICE RENDERERS: KEYPAD CARDS, VIRTUAL BANNER & +XL DIALS
+// MULTI-DEVICE RENDERERS: KEYPAD CARDS, INFO ROW & +XL DIALS
 // ============================================================
 
-export interface VirtualKeyBanner {
+export interface InfoCardKeyOpts {
   accent: string;
   bgTop: string;
-  bgBottom: string;
-  badge: string;
-  rightBadge?: string;
-  headline: string;
-  bodyLine1?: string;
-  bodyLine2?: string;
-  monoBody?: boolean;
+  bgBottom?: string;
+  topLabel: string;
+  lines: string[];
+  footer?: string;
+  mono?: boolean;
+  glow?: boolean;
+  center?: boolean;
 }
 
 /**
- * Renders one slice (`col` of `0..cols-1`) of a seamless multi-key virtual panoramic banner
- * spanning the top row of keypad-only devices (e.g. 5 keys = 720x144 on MK.2, 8 keys = 1152x144 on XL).
+ * Renders a self-contained, bezel-safe 144x144 info card for keypad-only devices
+ * (MK.2, XL, Neo, Mini) where physical key bezels make sliced panoramic text unreadable.
  */
-export function renderVirtualBannerKeySlice(
-  banner: VirtualKeyBanner,
-  col: number,
-  cols: number
-): string {
-  const safeCols = Math.max(3, cols);
-  const totalW = safeCols * 144;
-  const clamped = Math.max(0, Math.min(safeCols - 1, col));
-  const vx = clamped * 144;
-  const maxHeadChars = Math.floor((totalW - 44) / 11);
-  const maxBodyChars = Math.floor((totalW - 44) / (banner.monoBody ? 9.5 : 8.5));
-  const bodyFont = banner.monoBody ? MONO : FONT;
+export function renderInfoCardKey(opts: InfoCardKeyOpts): string {
+  const bgBottom = opts.bgBottom ?? "#080C14";
+  const font = opts.mono ? MONO : FONT;
+  const maxLines = opts.lines.slice(0, 4);
+  const lineCount = maxLines.length;
+  const fontSize = opts.mono
+    ? lineCount >= 4
+      ? 12
+      : 13
+    : lineCount <= 2
+      ? 16
+      : lineCount === 3
+        ? 14
+        : 12;
+  const lineHeight = opts.mono ? (lineCount >= 4 ? 19 : 21) : lineCount <= 2 ? 24 : 20;
+  const startY =
+    lineCount === 1
+      ? 78
+      : lineCount === 2
+        ? 64
+        : lineCount === 3
+          ? 56
+          : 50;
+  const xPos = opts.center ? 72 : 16;
+  const anchor = opts.center ? ' text-anchor="middle"' : "";
+  const maxChars = opts.mono ? 15 : opts.center ? 13 : 14;
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="${vx} 0 144 144">
-  <defs>
-    <linearGradient id="vbg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="${banner.bgTop}"/>
-      <stop offset="100%" stop-color="${banner.bgBottom}"/>
-    </linearGradient>
-  </defs>
-  <rect x="4" y="4" width="${totalW - 8}" height="136" rx="18" fill="url(#vbg)" stroke="${banner.accent}" stroke-opacity="0.72" stroke-width="3"/>
-  <rect x="24" y="4" width="${totalW - 48}" height="5" rx="2.5" fill="${banner.accent}" opacity="0.95"/>
-  <circle cx="26" cy="30" r="6" fill="${banner.accent}"/>
-  <text x="40" y="35" font-family="${FONT}" font-size="14" font-weight="800" fill="${banner.accent}" letter-spacing="0.7">${escXml(truncate(banner.badge, 36))}</text>
-  ${
-    banner.rightBadge
-      ? `<text x="${totalW - 22}" y="35" text-anchor="end" font-family="${MONO}" font-size="14" font-weight="800" fill="#CBD5E1">${escXml(truncate(banner.rightBadge, 24))}</text>`
-      : ""
+  const bodySvg = maxLines
+    .map(
+      (line, idx) =>
+        `<text x="${xPos}" y="${startY + idx * lineHeight}"${anchor} font-family="${font}" font-size="${fontSize}" font-weight="${idx === 0 && !opts.mono ? 800 : 700}" fill="${idx === 0 ? "#FFFFFF" : "#E2E8F0"}">${escXml(truncate(line, maxChars))}</text>`
+    )
+    .join("\n");
+
+  return keyShell(
+    opts.accent,
+    opts.bgTop,
+    bgBottom,
+    `
+    <text x="72" y="26" text-anchor="middle" font-family="${FONT}" font-size="10.5" font-weight="800" fill="${opts.accent}" letter-spacing="0.7">${escXml(truncate(opts.topLabel, 16))}</text>
+    ${bodySvg}
+    ${
+      opts.footer
+        ? `<text x="72" y="130" text-anchor="middle" font-family="${FONT}" font-size="9.5" font-weight="700" fill="#94A3B8">${escXml(truncate(opts.footer, 18))}</text>`
+        : ""
+    }
+  `,
+    Boolean(opts.glow)
+  );
+}
+
+/**
+ * Splits a command/question/prompt cleanly across `maxCards` keycaps on word/path boundaries
+ * so no character is ever sliced in half by a physical Stream Deck key bezel.
+ */
+export function chunkTextForKeyCards(
+  text: string,
+  charsPerLine: number,
+  linesPerCard: number,
+  maxCards: number
+): string[][] {
+  const cleaned = text.replace(/\s+/g, " ").trim();
+  if (!cleaned) return [];
+  const allLines: string[] = [];
+  let rem = cleaned;
+  while (rem.length > 0 && allLines.length < linesPerCard * maxCards) {
+    if (rem.length <= charsPerLine) {
+      allLines.push(rem);
+      rem = "";
+      break;
+    }
+    let split = rem.lastIndexOf(" ", charsPerLine);
+    if (split < Math.floor(charsPerLine * 0.35)) {
+      const slash = rem.lastIndexOf("/", charsPerLine);
+      if (slash > 0) split = slash + 1;
+      else split = charsPerLine;
+    }
+    allLines.push(rem.slice(0, split).trimEnd());
+    rem = rem.slice(split).trimStart();
   }
-  <text x="22" y="68" font-family="${FONT}" font-size="21" font-weight="800" fill="#FFFFFF">${escXml(truncate(banner.headline, maxHeadChars))}</text>
-  ${
-    banner.bodyLine1
-      ? `<text x="22" y="98" font-family="${bodyFont}" font-size="15" font-weight="700" fill="#E2E8F0">${escXml(truncate(banner.bodyLine1, maxBodyChars))}</text>`
-      : ""
+  if (rem.length > 0 && allLines.length > 0) {
+    const last = allLines[allLines.length - 1]!;
+    allLines[allLines.length - 1] =
+      last.length >= charsPerLine ? `${last.slice(0, charsPerLine - 1)}…` : `${last}…`;
   }
-  ${
-    banner.bodyLine2
-      ? `<text x="22" y="122" font-family="${bodyFont}" font-size="14" font-weight="600" fill="#94A3B8">${escXml(truncate(banner.bodyLine2, maxBodyChars))}</text>`
-      : ""
+  const cards: string[][] = [];
+  for (let i = 0; i < allLines.length; i += linesPerCard) {
+    cards.push(allLines.slice(i, i + linesPerCard));
   }
-</svg>`;
+  return cards.slice(0, maxCards);
 }
 
 export function renderModelPickerPanoramicFrame(

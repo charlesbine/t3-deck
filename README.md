@@ -29,17 +29,21 @@ T3 Deck now adapts automatically to **every Elgato Stream Deck** — reading eac
 
 ![T3 Deck Multi-Device Layouts](marketing/multi-device-layouts.png)
 
+*On keypad-only decks like the **Stream Deck MK.2**, Row 0 automatically switches to bezel-safe structured info cards so no text is ever cut across physical key gaps:*
+
+![T3 Deck on Stream Deck MK.2 hardware](marketing/mk2-approval-hardware.png)
+
 ### Supported Elgato Devices
 
 | Device | Grid & Controls | Bundled Profile | Overlay & Strip Behavior |
 |---|---|---|---|
 | **Stream Deck+** | `4×2` keys + 4 dials (`1600×200` strip) | `T3 Deck` | Full `1600×200` panoramic touch strip + 4-knob New Chat cockpit |
 | **Stream Deck+ XL** | `9×4` keys + 6 dials (`2400×200` strip) | `T3 Deck (+ XL)` | Extended `2400×200` 6-dial strip (Dials 5 & 6 = Prompt & Snooze scrubbers) + 20-tile Live Fleet Wall |
-| **Stream Deck MK.2 / Classic** | `5×3` keys (15) | `T3 Deck (MK.2)` | Core 8 + 4 Keypad Cockpit keys + 3 Thread Slots; **Row 0 stitches into a `720×144` Virtual Panoramic Banner** during approvals, questions & prompts |
-| **Stream Deck XL** | `8×4` keys (32) | `T3 Deck (XL)` | Mission Control + 4 Cockpit keys + 4 Quick Prompts + 16-tile Live Fleet Wall; **Row 0 stitches into an `1152×144` Virtual Panoramic Banner** |
+| **Stream Deck MK.2 / Classic** | `5×3` keys (15) | `T3 Deck (MK.2)` | Core 8 + 4 Keypad Cockpit keys + 3 Thread Slots; **Row 0 turns into 5 bezel-safe structured info cards** (Danger, Subagent, Command, Reason) during approvals & questions |
+| **Stream Deck XL** | `8×4` keys (32) | `T3 Deck (XL)` | Mission Control + 4 Cockpit keys + 4 Quick Prompts + 16-tile Live Fleet Wall; **Row 0 turns into 8 bezel-safe info cards** during approvals & questions |
 | **Stream Deck Neo** | `4×2` keys (8, 2 pages) | `T3 Deck (Neo)` | Page 1 Triage & Control + Page 2 Keypad Cockpit & 4 Thread Slots (via Neo's built-in page touch points); compact inline inspect tile |
 | **Stream Deck Mini** | `3×2` keys (6, 2 pages) | `T3 Deck (Mini)` | Page 1 Triage + Thread/Model/Mode + Page 2 New Chat/Prompt/Settle/Open/Snooze/Usage; compact 6-key approval/question views |
-| **Mobile / Virtual / Studio / Galleon** | Dynamic (`device.size`) | Drag from sidebar | Automatically adapts grid pagination, `originSlot` `BACK` placement, and Virtual Banners |
+| **Mobile / Virtual / Studio / Galleon** | Dynamic (`device.size`) | Drag from sidebar | Automatically adapts grid pagination, `originSlot` `BACK` placement, and structured info cards |
 
 - **Dual-Controller Actions (`Keypad` + `Encoder`):** `Thread Navigator`, `Model & Provider`, `Mode & Effort`, `Usage Radar`, `Send / Steer Prompt`, and `Snooze / Sync` work seamlessly on **both** LCD keys and rotary dials.
 - **Keypad-Native Pickers:** Tapping **Model & Provider** on a keypad-only deck opens a full-grid **Model Picker** (`★ FAVS ↔ ALL` + 1-tap apply); tapping **Mode & Effort** opens a 1-tap **Permission + Plan/Code + Reasoning Effort** grid.

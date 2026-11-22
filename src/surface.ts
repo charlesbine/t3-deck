@@ -1,8 +1,10 @@
 import {
+  chunkTextForKeyCards,
   renderApprovalPanoramicFrame,
   renderApproveKey,
   renderFleetAttentionKey,
   renderFleetPanoramicFrame,
+  renderInfoCardKey,
   renderModeEffortDialCanvas,
   renderModeEffortKey,
   renderModeEffortPanoramicFrame,
@@ -31,10 +33,9 @@ import {
   renderThreadToolsPanoramicFrame,
   renderUsageDialCanvas,
   renderUsageKey,
-  renderVirtualBannerKeySlice,
   slicePanoramicFrame,
-  type PanoramicFrame,
-  type VirtualKeyBanner
+  wrapLines,
+  type PanoramicFrame
 } from "./render.js";
 import {
   isThreadRunning,
@@ -181,7 +182,7 @@ export function itemIndexForSlot(slot: number, originSlot: number, keyCount = 8)
 /**
  * Returns true when this device has no physical LCD touch strip (`stripCols === 0`)
  * AND enough rows/columns (`rows >= 3 && cols >= 4`, e.g. MK.2 5x3 or XL 8x4)
- * to turn Row 0 into a seamless stitched multi-key virtual panoramic banner.
+ * to turn Row 0 into a bezel-safe structured info row of self-contained keycap cards.
  */
 export function usesVirtualTopBanner(geom: SurfaceGeometry, kind: DeckOverlay["kind"]): boolean {
   if (geom.stripCols > 0) return false;
@@ -190,7 +191,6 @@ export function usesVirtualTopBanner(geom: SurfaceGeometry, kind: DeckOverlay["k
     kind === "approval" ||
     kind === "question" ||
     kind === "prompts" ||
-    kind === "snooze" ||
     kind === "new-chat-builder"
   );
 }
@@ -266,98 +266,226 @@ function buildEnvChoices(store: T3Store): EnvChoice[] {
   return choices;
 }
 
-function buildVirtualBanner(
+/**
+ * Renders one bezel-safe, self-contained 144x144 card in Row 0 on keypad-only devices
+ * with >= 3 rows (MK.2 5x3, XL 8x4). Never splits characters across physical keycap bezels!
+ */
+function renderTopInfoRowKey(
   store: T3Store,
   ov: DeckOverlay,
+  col: number,
+  cols: number,
   deviceId: string
-): VirtualKeyBanner | null {
+): string | null {
   switch (ov.kind) {
     case "approval": {
       const { item, index, total } = store.getActiveOverlayApproval(deviceId);
       if (!item) {
-        return {
-          accent: "#10B981",
-          bgTop: "#0B241A",
-          bgBottom: "#070C12",
-          badge: "APPROVALS",
-          headline: "All pending requests resolved"
-        };
+        return col === 0
+          ? renderInfoCardKey({
+              accent: "#10B981",
+              bgTop: "#0B241A",
+              topLabel: "APPROVALS",
+              lines: ["All clear"],
+              center: true
+            })
+          : emptyOverlayTile();
       }
-      const who = item.subagentTitle
-        ? `${item.subagentTitle}${item.parentThreadTitle ? ` · via ${item.parentThreadTitle}` : ""}`
-        : item.threadTitle;
-      return {
-        accent: item.dangerous ? "#F43F5E" : "#F59E0B",
-        bgTop: item.dangerous ? "#3A0A16" : "#2B1B05",
-        bgBottom: "#080B12",
-        badge: item.dangerous
-          ? `⚠ DANGER: ${item.dangerReason ?? "DESTRUCTIVE"}`
-          : item.requestKind === "file-change"
-            ? "FILE CHANGE APPROVAL"
-            : "SHELL COMMAND APPROVAL",
-        rightBadge: `${index + 1}/${total} · ${item.projectName.toUpperCase()}`,
-        headline: who,
-        bodyLine1: item.prompt ? `$ ${item.prompt}` : item.reason ?? "Tap OPEN T3 for details",
-        bodyLine2: item.reason && item.prompt ? item.reason : "Tap banner to open in T3 Code",
-        monoBody: Boolean(item.prompt)
-      };
+      const accent = item.dangerous ? "#F43F5E" : "#F59E0B";
+      const bgTop = item.dangerous ? "#3A0A16" : "#2B1B05";
+
+      // Col 0: Danger / Kind Alert Card
+      if (col === 0) {
+        const badgeLines = item.dangerous
+          ? wrapLines(item.dangerReason ?? "DESTRUCTIVE CMD", 12, 2)
+          : wrapLines(item.requestKind === "file-change" ? "FILE CHANGE" : "SHELL CMD", 12, 2);
+        return renderInfoCardKey({
+          accent,
+          bgTop,
+          topLabel: item.dangerous ? "⚠ DANGER" : `REQ ${index + 1}/${total}`,
+          lines: badgeLines,
+          footer: item.dangerous ? `REQ ${index + 1}/${total} · ${item.projectName}` : item.projectName,
+          glow: item.dangerous,
+          center: true
+        });
+      }
+
+      // Col 1: Who / Subagent Card
+      if (col === 1) {
+        const who = item.subagentTitle || item.threadTitle;
+        return renderInfoCardKey({
+          accent,
+          bgTop: "#141926",
+          topLabel: item.subagentTitle ? "SUBAGENT" : "THREAD",
+          lines: wrapLines(who, 13, 3),
+          footer: item.parentThreadTitle ? `via ${item.parentThreadTitle}` : item.projectName
+        });
+      }
+
+      // Last col (col === cols - 1): Reason / Project context card (when >= 5 cols)
+      const cmdSlots = Math.max(1, cols >= 5 ? cols - 3 : cols - 2);
+      const cmdStartCol = 2;
+      if (cols >= 5 && col === cols - 1) {
+        const reasonText = item.reason ?? "Tap any card to open in T3 Code";
+        return renderInfoCardKey({
+          accent: "#38BDF8",
+          bgTop: "#0E1D30",
+          topLabel: `${index + 1}/${total} · ${item.projectName.toUpperCase()}`,
+          lines: wrapLines(reasonText, 14, 3),
+          footer: "TAP: OPEN T3"
+        });
+      }
+
+      // Middle cols (2 .. cmdStartCol + cmdSlots - 1): word-wrapped mono command chunks
+      const cmdIdx = col - cmdStartCol;
+      const cmdText = item.prompt ? `$ ${item.prompt}` : item.reason ?? "Inspect in T3";
+      const chunks = chunkTextForKeyCards(cmdText, 14, 4, cmdSlots);
+      const lines = chunks[cmdIdx];
+      if (!lines || lines.length === 0) {
+        return emptyOverlayTile();
+      }
+      return renderInfoCardKey({
+        accent,
+        bgTop: "#111622",
+        topLabel: cmdIdx === 0 ? "COMMAND" : `CMD (${cmdIdx + 1}/${chunks.length})`,
+        lines,
+        mono: true
+      });
     }
+
     case "question": {
       const { item, index, total } = store.getActiveOverlayQuestion(deviceId);
       const q = item?.questions[ov.questionIndex];
-      return {
+      if (!item || !q) return col === 0 ? emptyOverlayTile("QUESTION") : emptyOverlayTile();
+
+      if (col === 0) {
+        return renderInfoCardKey({
+          accent: "#C084FC",
+          bgTop: "#271040",
+          topLabel: `QUESTION ${index + 1}/${total}`,
+          lines: wrapLines(q.header || item.projectName, 12, 2),
+          footer: item.projectName.toUpperCase(),
+          glow: true,
+          center: true
+        });
+      }
+      if (col === 1) {
+        return renderInfoCardKey({
+          accent: "#C084FC",
+          bgTop: "#171429",
+          topLabel: item.subagentTitle ? "SUBAGENT" : "THREAD",
+          lines: wrapLines(item.subagentTitle ?? item.threadTitle, 13, 3),
+          footer: q.multiSelect ? "MULTI-SELECT" : "PICK BELOW"
+        });
+      }
+      const qSlots = Math.max(1, cols - 2);
+      const chunks = chunkTextForKeyCards(q.question, 14, 3, qSlots);
+      const lines = chunks[col - 2];
+      if (!lines || lines.length === 0) return emptyOverlayTile();
+      return renderInfoCardKey({
         accent: "#C084FC",
-        bgTop: "#271040",
-        bgBottom: "#090B14",
-        badge: q?.header ? `QUESTION · ${q.header.toUpperCase()}` : "AGENT QUESTION",
-        rightBadge: item ? `${index + 1}/${total} · ${item.projectName.toUpperCase()}` : "",
-        headline: q?.question ?? item?.threadTitle ?? "Agent needs input",
-        bodyLine1: item ? `${item.threadTitle} · Tap an option key below` : "Tap BACK to close"
-      };
+        bgTop: "#1B1230",
+        topLabel: col === 2 ? "ASKING" : `Q (${col - 1}/${chunks.length})`,
+        lines
+      });
     }
-    case "snooze": {
-      const thread = store.getFocusedThread();
-      const proj = thread ? store.getProjectName(thread.projectId) : "T3";
-      return {
-        accent: "#818CF8",
-        bgTop: "#1A1D42",
-        bgBottom: "#080C15",
-        badge: `SNOOZE PRESETS · ${proj.toUpperCase()}`,
-        rightBadge: `DEFAULT TAP: ${store.getDefaultSnoozePreset().shortLabel}`,
-        headline: thread?.title ?? "No thread focused",
-        bodyLine1: "Tap any preset below to snooze immediately"
-      };
-    }
+
     case "prompts": {
       const thread = store.getFocusedThread();
       const hasAi = Boolean(
         store.promptSuggestion && thread && store.promptSuggestion.threadId === thread.id
       );
-      return {
-        accent: hasAi ? "#22D3EE" : "#A78BFA",
-        bgTop: hasAi ? "#082936" : "#1D1338",
-        bgBottom: "#080C15",
-        badge: hasAi ? "✨ AI PREDICTED NEXT PROMPT" : "QUICK PROMPTS",
-        rightBadge: thread && isThreadRunning(thread) ? "STEER ACTIVE" : "SEND",
-        headline: hasAi ? store.promptSuggestion!.text : thread?.title ?? "Quick Prompts",
-        bodyLine1: "Tap any prompt key below to send or steer"
-      };
+      const accent = hasAi ? "#22D3EE" : "#A78BFA";
+      if (col === 0) {
+        return renderInfoCardKey({
+          accent,
+          bgTop: hasAi ? "#082936" : "#1D1338",
+          topLabel: hasAi ? "✨ AI NEXT" : "PROMPTS",
+          lines: wrapLines(thread?.title ?? "No thread", 13, 3),
+          footer: thread && isThreadRunning(thread) ? "STEER ACTIVE" : "SEND",
+          glow: hasAi
+        });
+      }
+      if (hasAi) {
+        const chunks = chunkTextForKeyCards(store.promptSuggestion!.text, 14, 3, Math.max(1, cols - 1));
+        const lines = chunks[col - 1];
+        if (!lines || lines.length === 0) return emptyOverlayTile();
+        return renderInfoCardKey({
+          accent: "#22D3EE",
+          bgTop: "#0B2230",
+          topLabel: col === 1 ? "SUGGESTED" : `HINT (${col}/${chunks.length})`,
+          lines
+        });
+      }
+      return emptyOverlayTile();
     }
+
     case "new-chat-builder": {
       const projects = store.getLaunchProjects();
       const proj = projects[ov.projectIndex] ?? projects[0];
       const catalog = store.getNewChatBuilderCatalog(deviceId);
       const model = catalog[ov.modelIndex] ?? catalog[0];
-      return {
-        accent: "#38BDF8",
-        bgTop: "#0B1E34",
-        bgBottom: "#070C15",
-        badge: "NEW CHAT BUILDER",
-        rightBadge: `${ov.workspaceMode.toUpperCase()} · ${ov.interactionMode === "plan" ? "PLAN" : "CODE"}`,
-        headline: `${proj?.title ?? "Default"} · ${model?.shortName ?? "Default"}`,
-        bodyLine1: "Pick a repo below or press LAUNCH to open in T3 Code"
-      };
+      const wsColor =
+        ov.workspaceMode === "worktree"
+          ? "#10B981"
+          : ov.workspaceMode === "scratch"
+            ? "#F59E0B"
+            : "#38BDF8";
+      const isPlan = ov.interactionMode === "plan";
+
+      switch (col) {
+        case 0:
+          return renderInfoCardKey({
+            accent: "#38BDF8",
+            bgTop: "#0B1E34",
+            topLabel: `1 · REPO (${ov.projectIndex + 1}/${Math.max(1, projects.length)})`,
+            lines: wrapLines(proj?.title ?? "Default", 12, 2),
+            footer: "TAP: NEXT REPO",
+            center: true
+          });
+        case 1:
+          return renderInfoCardKey({
+            accent: model?.accentColor ?? "#E07A5F",
+            bgTop: "#141A2C",
+            topLabel: `2 · ${ov.modelScope === "favorites" ? "★ FAVS" : "ALL"}`,
+            lines: wrapLines(model?.shortName ?? "Default", 12, 2),
+            footer: "TAP: NEXT MODEL",
+            center: true
+          });
+        case 2:
+          return renderInfoCardKey({
+            accent: wsColor,
+            bgTop: "#0D2026",
+            topLabel: "3 · WORKSPACE",
+            lines: [ov.workspaceMode.toUpperCase()],
+            footer: "TAP: CYCLE",
+            center: true
+          });
+        case 3:
+          return renderInfoCardKey({
+            accent: isPlan ? "#C084FC" : "#10B981",
+            bgTop: isPlan ? "#271040" : "#0A2B22",
+            topLabel: "4 · MODE",
+            lines: [isPlan ? "✦ PLAN" : "CODE"],
+            footer: "TAP: TOGGLE",
+            glow: isPlan,
+            center: true
+          });
+        case 4:
+          return renderOverlayActionKey({
+            topLabel: "READY",
+            mainLabel: "LAUNCH",
+            subLabel: "OPEN CHAT",
+            accent: "#10B981",
+            bgTop: "#0A2E22",
+            glyph: "check",
+            glow: true
+          });
+        default:
+          return emptyOverlayTile();
+      }
     }
+
     default:
       return null;
   }
@@ -644,10 +772,10 @@ export function renderOverlayKeySvg(
   const slot = row * geom.cols + col;
   const useBanner = usesVirtualTopBanner(geom, ov.kind);
 
-  // Row 0 on MK.2 / XL keypad-only overlays renders a seamless stitched virtual panoramic banner!
+  // Row 0 on MK.2 / XL keypad-only overlays renders bezel-safe structured info cards (no split letters!)
   if (useBanner && row === 0) {
-    const banner = buildVirtualBanner(store, ov, geom.deviceId);
-    if (banner) return renderVirtualBannerKeySlice(banner, col, geom.cols);
+    const cardSvg = renderTopInfoRowKey(store, ov, col, geom.cols, geom.deviceId);
+    if (cardSvg) return cardSvg;
   }
 
   // Remap body coordinates when Row 0 is a virtual banner
@@ -1424,7 +1552,7 @@ export async function handleOverlayKeyPress(
   const slot = row * geom.cols + col;
   const useBanner = usesVirtualTopBanner(geom, ov.kind);
 
-  // Tapping Row 0 virtual banner opens thread on approval/question, or closes drawer otherwise
+  // Tapping Row 0 structured info cards
   if (useBanner && row === 0) {
     if (ov.kind === "approval") {
       const { item } = store.getActiveOverlayApproval(geom.deviceId);
@@ -1432,6 +1560,35 @@ export async function handleOverlayKeyPress(
     } else if (ov.kind === "question") {
       const { item } = store.getActiveOverlayQuestion(geom.deviceId);
       if (item) cb.openThread(item.threadId);
+    } else if (ov.kind === "new-chat-builder") {
+      if (col === 0) {
+        store.stepNewChatBuilderDial(0, 1, geom.deviceId);
+      } else if (col === 1) {
+        if (isLongPress) store.toggleNewChatBuilderDial(1, geom.deviceId);
+        else store.stepNewChatBuilderDial(1, 1, geom.deviceId);
+      } else if (col === 2) {
+        store.stepNewChatBuilderDial(2, 1, geom.deviceId);
+      } else if (col === 3) {
+        store.toggleNewChatBuilderDial(2, geom.deviceId);
+      } else if (col === 4) {
+        const projects = store.getLaunchProjects();
+        const proj = projects[ov.projectIndex] ?? projects[0];
+        if (proj) {
+          const catalog = store.getNewChatBuilderCatalog(geom.deviceId);
+          const chosen = catalog[ov.modelIndex] ?? catalog[0];
+          const modelSelection: ModelSelection = chosen
+            ? { instanceId: chosen.instanceId, provider: chosen.driver, model: chosen.slug }
+            : (store.getDefaultModelSelectionForProject(proj) ?? { model: "claude-opus-5-5" });
+          await cb.createAndOpenThread({
+            projectId: proj.id,
+            modelSelection,
+            interactionMode: ov.interactionMode,
+            workspaceMode: ov.workspaceMode
+          });
+          store.setToast("new", proj.title.toUpperCase(), "#10B981", 1200);
+        }
+        store.closeOverlay(geom.deviceId);
+      }
     } else {
       store.closeOverlay(geom.deviceId);
     }
