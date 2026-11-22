@@ -76,6 +76,7 @@ function openUrl(url: string): void {
 }
 
 function openThreadInApp(envId: string | null, threadId: string): void {
+  store.markCurrentAppThread(threadId);
   if (envId) {
     openUrl(`t3code://threads/${encodeURIComponent(envId)}/${encodeURIComponent(threadId)}`);
   } else {
@@ -1109,15 +1110,30 @@ class ThreadDialAction extends SingletonAction {
     store.stepFocus(ev.payload.ticks);
   }
 
+  override onDialDown(ev: DialDownEvent): void {
+    const geom = geometryForAction(ev.action);
+    if (store.getOverlay(geom.deviceId).kind !== "none") return;
+    pressTracker.down(ev.action.id, () => {
+      const current = store.returnToCurrentThread();
+      if (current) {
+        store.setToast("thread-dial", "CURRENT THREAD", "#38BDF8", 900);
+      } else {
+        void ev.action.showAlert();
+      }
+    });
+  }
+
   override onDialUp(ev: DialUpEvent): void {
     if (routeOverlayDialTapOrPress(ev.action)) return;
-    const thread = store.getFocusedThread();
-    if (!thread) {
-      void ev.action.showAlert();
-      return;
-    }
-    openThreadInApp(store.environmentId, thread.id);
-    store.setToast("thread-dial", "OPENED IN T3", "#38BDF8", 900);
+    pressTracker.up(ev.action.id, () => {
+      const thread = store.getFocusedThread();
+      if (!thread) {
+        void ev.action.showAlert();
+        return;
+      }
+      openThreadInApp(store.environmentId, thread.id);
+      store.setToast("thread-dial", "OPENED IN T3", "#38BDF8", 900);
+    });
   }
 
   override onTouchTap(ev: TouchTapEvent): void {
@@ -1162,7 +1178,8 @@ class ThreadDialAction extends SingletonAction {
         index,
         total,
         store.connectionState === "connected",
-        store.getToast("thread-dial")
+        store.getToast("thread-dial"),
+        store.isPeekingAway()
       );
     });
   }
