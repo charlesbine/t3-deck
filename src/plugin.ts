@@ -17,16 +17,22 @@ import {
   renderApproveKey,
   renderFleetAttentionKey,
   renderModeEffortDialCanvas,
+  renderModeEffortKey,
   renderModelDialCanvas,
+  renderModelKey,
   renderNewThreadKey,
   renderOpenThreadKey,
+  renderQuickPromptDialCanvas,
   renderQuickPromptKey,
   renderSettlePinKey,
+  renderSnoozeDialCanvas,
   renderSnoozeSyncKey,
   renderStopDenyKey,
   renderThreadDialCanvas,
+  renderThreadKey,
   renderThreadSlotKey,
   renderUsageDialCanvas,
+  renderUsageKey,
   svgDataUri
 } from "./render.js";
 import {
@@ -37,20 +43,28 @@ import {
   isThreadSnoozed,
   normalizeOptionSelections,
   primaryPullRequest,
+  QUICK_PROMPT_PRESETS,
   resolveReasoningValue,
   RUNTIME_MODE_ORDER,
   T3Store
 } from "./store.js";
 import {
+  geometryFromDevice,
   handleOverlayDialRotate,
   handleOverlayDialTapOrPress,
   handleOverlayKeyPress,
+  keySlotForCoords,
   renderOverlayDialSvg,
   renderOverlayKeySvg,
   type SurfaceDispatchCallbacks
 } from "./surface.js";
 import { T3Client } from "./t3-client.js";
-import type { NewThreadSettings, QuickPromptSettings, RuntimeMode } from "./types.js";
+import type {
+  NewThreadSettings,
+  QuickPromptSettings,
+  RuntimeMode,
+  SurfaceGeometry
+} from "./types.js";
 
 const PLUGIN_ID = "com.charlesbine.t3-deck";
 const LONG_PRESS_MS = 650;
@@ -182,6 +196,11 @@ const surfaceCallbacks: SurfaceDispatchCallbacks = {
       store.setToast("stop", "STOPPED", "#EF4444");
     }
   },
+  setModelSelection: (threadId, modelSelection) =>
+    client.setModelSelection(threadId, modelSelection),
+  setRuntimeMode: (threadId, runtimeMode) => client.setRuntimeMode(threadId, runtimeMode),
+  setInteractionMode: (threadId, interactionMode) =>
+    client.setInteractionMode(threadId, interactionMode),
   createAndOpenThread: async (input) => {
     const threadId = await client.createThread(input);
     store.focusThread(threadId);
@@ -192,9 +211,22 @@ const surfaceCallbacks: SurfaceDispatchCallbacks = {
   resync: () => client.reconnectNow()
 };
 
-function keySlot(actionObj: { isKey(): boolean; coordinates?: { column: number; row: number } }, fallback: number): number {
+function geometryForAction(actionObj: {
+  device?: { id?: string; type?: number; size?: { columns?: number; rows?: number } };
+}): SurfaceGeometry {
+  return geometryFromDevice(actionObj.device);
+}
+
+function keySlot(
+  actionObj: {
+    isKey(): boolean;
+    coordinates?: { column: number; row: number };
+    device?: { id?: string; type?: number; size?: { columns?: number; rows?: number } };
+  },
+  fallback: number
+): number {
   const c = actionObj.isKey() ? actionObj.coordinates : undefined;
-  return c ? c.row * 4 + c.column : fallback;
+  return c ? keySlotForCoords(c.column, c.row, geometryForAction(actionObj)) : fallback;
 }
 
 function setKeySvg(key: KeyAction, svg: string): Promise<void> {
@@ -206,28 +238,31 @@ function setDialSvg(dial: DialAction, svg: string): Promise<void> {
 }
 
 function renderKeySurface(key: KeyAction, baseSvg: () => string): Promise<void> {
-  if (store.overlay.kind !== "none" && key.coordinates) {
-    const ovSvg = renderOverlayKeySvg(store, key.coordinates.column, key.coordinates.row);
+  const geom = geometryForAction(key);
+  if (store.getOverlay(geom.deviceId).kind !== "none" && key.coordinates) {
+    const ovSvg = renderOverlayKeySvg(store, key.coordinates.column, key.coordinates.row, geom);
     if (ovSvg) return setKeySvg(key, ovSvg);
   }
   return setKeySvg(key, baseSvg());
 }
 
 function renderDialSurface(dial: DialAction, baseSvg: () => string): Promise<void> {
-  if (store.overlay.kind !== "none") {
-    const ovSvg = renderOverlayDialSvg(store, dial.coordinates.column);
+  const geom = geometryForAction(dial);
+  if (store.getOverlay(geom.deviceId).kind !== "none") {
+    const ovSvg = renderOverlayDialSvg(store, dial.coordinates.column, geom);
     if (ovSvg) return setDialSvg(dial, ovSvg);
   }
   return setDialSvg(dial, baseSvg());
 }
 
 function routeOverlayKeyDown(ev: KeyDownEvent): boolean {
-  if (store.overlay.kind === "none") return false;
+  const geom = geometryForAction(ev.action);
+  if (store.getOverlay(geom.deviceId).kind === "none") return false;
   if (!ev.action.isKey() || !ev.action.coordinates) return false;
   const { column, row } = ev.action.coordinates;
   pressTracker.down(ev.action.id, async () => {
     try {
-      await handleOverlayKeyPress(store, column, row, true, surfaceCallbacks);
+      await handleOverlayKeyPress(store, column, row, true, surfaceCallbacks, geom);
     } catch (err) {
       streamDeck.logger.error(`overlay long key failed: ${String(err)}`);
       await ev.action.showAlert();
@@ -238,12 +273,13 @@ function routeOverlayKeyDown(ev: KeyDownEvent): boolean {
 
 function routeOverlayKeyUp(ev: KeyUpEvent): boolean {
   if (pressTracker.consumeLongRelease(ev.action.id)) return true;
-  if (store.overlay.kind === "none") return false;
+  const geom = geometryForAction(ev.action);
+  if (store.getOverlay(geom.deviceId).kind === "none") return false;
   if (!ev.action.isKey() || !ev.action.coordinates) return false;
   const { column, row } = ev.action.coordinates;
   pressTracker.up(ev.action.id, async () => {
     try {
-      await handleOverlayKeyPress(store, column, row, false, surfaceCallbacks);
+      await handleOverlayKeyPress(store, column, row, false, surfaceCallbacks, geom);
     } catch (err) {
       streamDeck.logger.error(`overlay key failed: ${String(err)}`);
       await ev.action.showAlert();
@@ -253,16 +289,20 @@ function routeOverlayKeyUp(ev: KeyUpEvent): boolean {
 }
 
 function routeOverlayDialRotate(ev: DialRotateEvent): boolean {
-  if (store.overlay.kind === "none") return false;
-  return handleOverlayDialRotate(store, ev.action.coordinates.column, ev.payload.ticks);
+  const geom = geometryForAction(ev.action);
+  if (store.getOverlay(geom.deviceId).kind === "none") return false;
+  return handleOverlayDialRotate(store, ev.action.coordinates.column, ev.payload.ticks, geom);
 }
 
 function routeOverlayDialTapOrPress(dial: DialAction): boolean {
-  if (store.overlay.kind === "none") return false;
-  void handleOverlayDialTapOrPress(store, dial.coordinates.column, surfaceCallbacks).catch((err) => {
-    streamDeck.logger.error(`overlay dial action failed: ${String(err)}`);
-    void dial.showAlert();
-  });
+  const geom = geometryForAction(dial);
+  if (store.getOverlay(geom.deviceId).kind === "none") return false;
+  void handleOverlayDialTapOrPress(store, dial.coordinates.column, surfaceCallbacks, geom).catch(
+    (err) => {
+      streamDeck.logger.error(`overlay dial action failed: ${String(err)}`);
+      void dial.showAlert();
+    }
+  );
   return true;
 }
 
@@ -306,25 +346,27 @@ class FleetAttentionAction extends SingletonAction {
   override onKeyDown(ev: KeyDownEvent): void {
     if (routeOverlayKeyDown(ev)) return;
     const slot = keySlot(ev.action, 0);
+    const deviceId = geometryForAction(ev.action).deviceId;
     pressTracker.down(ev.action.id, () => {
-      store.openFleetOverlay(slot);
+      store.openFleetOverlay(slot, deviceId);
     });
   }
 
   override onKeyUp(ev: KeyUpEvent): void {
     if (routeOverlayKeyUp(ev)) return;
     const slot = keySlot(ev.action, 0);
+    const deviceId = geometryForAction(ev.action).deviceId;
     pressTracker.up(ev.action.id, async () => {
       if (store.connectionState !== "connected") {
         await client.reconnectNow();
         store.setToast("fleet", "RECONNECTING", "#38BDF8");
         return;
       }
-      if (store.openApprovalOverlay(undefined, slot)) return;
-      if (store.openQuestionOverlay(undefined, slot)) return;
+      if (store.openApprovalOverlay(undefined, slot, deviceId)) return;
+      if (store.openQuestionOverlay(undefined, slot, deviceId)) return;
       const target = store.getNextAttentionThread();
       if (!target) {
-        store.openFleetOverlay(slot);
+        store.openFleetOverlay(slot, deviceId);
         return;
       }
       store.focusThread(target.id);
@@ -358,9 +400,14 @@ class ApproveAction extends SingletonAction {
 
   override onKeyDown(ev: KeyDownEvent): void {
     if (routeOverlayKeyDown(ev)) return;
+    const slot = keySlot(ev.action, 1);
+    const deviceId = geometryForAction(ev.action).deviceId;
     pressTracker.down(ev.action.id, () => {
       // Never blindly session-approve from base layer — open panoramic Approval Inspector first
-      if (!store.openApprovalOverlay() && !store.openQuestionOverlay()) {
+      if (
+        !store.openApprovalOverlay(undefined, slot, deviceId) &&
+        !store.openQuestionOverlay(undefined, slot, deviceId)
+      ) {
         void ev.action.showAlert();
       }
     });
@@ -368,6 +415,8 @@ class ApproveAction extends SingletonAction {
 
   override onKeyUp(ev: KeyUpEvent): void {
     if (routeOverlayKeyUp(ev)) return;
+    const slot = keySlot(ev.action, 1);
+    const deviceId = geometryForAction(ev.action).deviceId;
     pressTracker.up(ev.action.id, async () => {
       const target = store.getActionableApprovalThread();
       if (!target || !target.pendingRuntimeRequest) {
@@ -378,12 +427,12 @@ class ApproveAction extends SingletonAction {
       }
 
       if (isQuestionRequest(target)) {
-        store.openQuestionOverlay(target.id);
+        store.openQuestionOverlay(target.id, slot, deviceId);
         return;
       }
 
-      // 2-step safe approval: first press opens the panoramic 1600x200 Approval Inspector
-      store.openApprovalOverlay(target.id);
+      // 2-step safe approval: first press opens the panoramic Approval Inspector
+      store.openApprovalOverlay(target.id, slot, deviceId);
     });
   }
 
@@ -434,8 +483,10 @@ class StopDenyAction extends SingletonAction {
     pressTracker.up(ev.action.id, async () => {
       const approval = store.getActionableApprovalThread();
       if (approval && isApprovalRequest(approval) && approval.pendingRuntimeRequest) {
+        const slot = keySlot(ev.action, 2);
+        const deviceId = geometryForAction(ev.action).deviceId;
         // Open Approval Inspector so you can confirm which request you are declining
-        store.openApprovalOverlay(approval.id);
+        store.openApprovalOverlay(approval.id, slot, deviceId);
         return;
       }
 
@@ -481,8 +532,9 @@ class SettlePinAction extends SingletonAction {
   override onKeyDown(ev: KeyDownEvent): void {
     if (routeOverlayKeyDown(ev)) return;
     const slot = keySlot(ev.action, 3);
+    const deviceId = geometryForAction(ev.action).deviceId;
     pressTracker.down(ev.action.id, () => {
-      store.openThreadToolsOverlay(slot);
+      store.openThreadToolsOverlay(slot, deviceId);
     });
   }
 
@@ -534,12 +586,13 @@ class NewThreadAction extends SingletonAction<NewThreadSettings> {
     this.settingsByAction.set(ev.action.id, ev.payload.settings ?? {});
     if (routeOverlayKeyDown(ev)) return;
     const slot = keySlot(ev.action, 4);
+    const deviceId = geometryForAction(ev.action).deviceId;
     const cfg = this.settingsByAction.get(ev.action.id) ?? {};
     const firstPicker = cfg.firstPicker ?? "project";
     const defaultMode = cfg.defaultInteractionMode === "plan" ? "plan" : "default";
 
     pressTracker.down(ev.action.id, () => {
-      store.openNewChatBuilderOverlay(slot, firstPicker, defaultMode);
+      store.openNewChatBuilderOverlay(slot, firstPicker, defaultMode, deviceId);
     });
   }
 
@@ -603,20 +656,23 @@ class QuickPromptAction extends SingletonAction<QuickPromptSettings> {
 
   override onWillAppear(ev: WillAppearEvent<QuickPromptSettings>): void | Promise<void> {
     this.settingsByAction.set(ev.action.id, ev.payload.settings ?? {});
-    if (ev.action.isKey()) return this.render(ev.action);
+    if (ev.action.isKey()) return this.renderKey(ev.action);
+    if (ev.action.isDial()) return this.renderDial(ev.action);
   }
 
   override onDidReceiveSettings(ev: DidReceiveSettingsEvent<QuickPromptSettings>): void {
     this.settingsByAction.set(ev.action.id, ev.payload.settings ?? {});
-    if (ev.action.isKey()) void this.render(ev.action);
+    if (ev.action.isKey()) void this.renderKey(ev.action);
+    if (ev.action.isDial()) void this.renderDial(ev.action);
   }
 
   override onKeyDown(ev: KeyDownEvent<QuickPromptSettings>): void {
     this.settingsByAction.set(ev.action.id, ev.payload.settings ?? {});
     if (routeOverlayKeyDown(ev)) return;
     const slot = keySlot(ev.action, 5);
+    const deviceId = geometryForAction(ev.action).deviceId;
     pressTracker.down(ev.action.id, () => {
-      store.openPromptsOverlay(slot);
+      store.openPromptsOverlay(slot, deviceId);
     });
   }
 
@@ -645,13 +701,63 @@ class QuickPromptAction extends SingletonAction<QuickPromptSettings> {
     });
   }
 
+  override onDialRotate(ev: DialRotateEvent): void {
+    if (routeOverlayDialRotate(ev)) return;
+    store.stepPromptDial(ev.payload.ticks);
+  }
+
+  override async onDialUp(ev: DialUpEvent): Promise<void> {
+    if (routeOverlayDialTapOrPress(ev.action)) return;
+    await this.dispatchDialPrompt(ev.action);
+  }
+
+  override async onTouchTap(ev: TouchTapEvent): Promise<void> {
+    if (routeOverlayDialTapOrPress(ev.action)) return;
+    await this.dispatchDialPrompt(ev.action);
+  }
+
+  private resolveDialPrompt(): { label: string; text: string; isAiNext: boolean } {
+    const thread = store.getFocusedThread();
+    const idx = store.promptDialIndex;
+    if (idx === 0) {
+      if (store.promptSuggestion && thread && store.promptSuggestion.threadId === thread.id) {
+        return { label: "AI NEXT", text: store.promptSuggestion.text, isAiNext: true };
+      }
+      return { label: "CONTINUE", text: "Continue", isAiNext: false };
+    }
+    if (idx === 1) {
+      return { label: "IMPLEMENT", text: "Implement the proposed plan.", isAiNext: false };
+    }
+    const preset = QUICK_PROMPT_PRESETS[idx - 2];
+    return preset
+      ? { label: preset.label, text: preset.prompt, isAiNext: false }
+      : { label: "CONTINUE", text: "Continue", isAiNext: false };
+  }
+
+  private async dispatchDialPrompt(dial: DialAction): Promise<void> {
+    const thread = store.getFocusedThread();
+    if (!thread) {
+      await dial.showAlert();
+      return;
+    }
+    const picked = this.resolveDialPrompt();
+    try {
+      await client.sendQuickMessage(thread.id, picked.text, "auto", thread.activeRunId);
+      store.setToast("prompt-dial", `SENT: ${picked.label}`, "#22D3EE", 1200);
+    } catch (err) {
+      streamDeck.logger.error(`prompt dial dispatch failed: ${String(err)}`);
+      await dial.showAlert();
+    }
+  }
+
   refreshAll(): void {
     this.actions.forEach((a) => {
-      if (a.isKey()) void this.render(a);
+      if (a.isKey()) void this.renderKey(a);
+      else if (a.isDial()) void this.renderDial(a);
     });
   }
 
-  private render(key: KeyAction): Promise<void> {
+  private renderKey(key: KeyAction): Promise<void> {
     return renderKeySurface(key, () => {
       const cfg = this.settingsByAction.get(key.id) ?? {};
       const label = (cfg.label || "CONTINUE").trim();
@@ -661,6 +767,22 @@ class QuickPromptAction extends SingletonAction<QuickPromptSettings> {
         label,
         mode,
         store.getToast(`prompt:${key.id}`)
+      );
+    });
+  }
+
+  private renderDial(dial: DialAction): Promise<void> {
+    return renderDialSurface(dial, () => {
+      const picked = this.resolveDialPrompt();
+      const total = 2 + QUICK_PROMPT_PRESETS.length;
+      return renderQuickPromptDialCanvas(
+        store.getFocusedThread(),
+        picked.label,
+        picked.text,
+        store.promptDialIndex,
+        total,
+        picked.isAiNext,
+        store.getToast("prompt-dial")
       );
     });
   }
@@ -718,19 +840,21 @@ class OpenThreadAction extends SingletonAction {
 @action({ UUID: `${PLUGIN_ID}.snooze-sync` })
 class SnoozeSyncAction extends SingletonAction {
   override onWillAppear(ev: WillAppearEvent): void | Promise<void> {
-    if (ev.action.isKey()) return this.render(ev.action);
+    if (ev.action.isKey()) return this.renderKey(ev.action);
+    if (ev.action.isDial()) return this.renderDial(ev.action);
   }
 
   override onKeyDown(ev: KeyDownEvent): void {
     if (routeOverlayKeyDown(ev)) return;
     const slot = keySlot(ev.action, 7);
+    const deviceId = geometryForAction(ev.action).deviceId;
     pressTracker.down(ev.action.id, () => {
       if (store.connectionState !== "connected") {
         store.setToast("snooze", "SYNCING", "#38BDF8", 1200);
         void client.reconnectNow();
         return;
       }
-      store.openSnoozeOverlay(slot);
+      store.openSnoozeOverlay(slot, deviceId);
     });
   }
 
@@ -762,13 +886,55 @@ class SnoozeSyncAction extends SingletonAction {
     });
   }
 
+  override onDialRotate(ev: DialRotateEvent): void {
+    if (routeOverlayDialRotate(ev)) return;
+    store.stepSnoozeDial(ev.payload.ticks);
+  }
+
+  override async onDialUp(ev: DialUpEvent): Promise<void> {
+    if (routeOverlayDialTapOrPress(ev.action)) return;
+    await this.applyDialSnooze(ev.action);
+  }
+
+  override async onTouchTap(ev: TouchTapEvent): Promise<void> {
+    if (routeOverlayDialTapOrPress(ev.action)) return;
+    await this.applyDialSnooze(ev.action);
+  }
+
+  private async applyDialSnooze(dial: DialAction): Promise<void> {
+    if (store.connectionState !== "connected") {
+      await client.reconnectNow();
+      return;
+    }
+    const thread = store.getFocusedThread();
+    if (!thread) {
+      await dial.showAlert();
+      return;
+    }
+    try {
+      if (isThreadSnoozed(thread)) {
+        await client.unsnoozeThread(thread.id);
+        store.setToast("snooze-dial", "UNSNOOZED", "#10B981", 1100);
+        return;
+      }
+      const presets = store.getResolvedSnoozePresets();
+      const preset = presets[store.snoozeDialIndex % Math.max(1, presets.length)] ?? store.getDefaultSnoozePreset();
+      await client.snoozeThreadUntil(thread.id, preset.snoozedUntilIso);
+      store.setToast("snooze-dial", `SNOOZED ${preset.shortLabel}`, "#818CF8", 1200);
+    } catch (err) {
+      streamDeck.logger.error(`snooze dial apply failed: ${String(err)}`);
+      await dial.showAlert();
+    }
+  }
+
   refreshAll(): void {
     this.actions.forEach((a) => {
-      if (a.isKey()) void this.render(a);
+      if (a.isKey()) void this.renderKey(a);
+      else if (a.isDial()) void this.renderDial(a);
     });
   }
 
-  private render(key: KeyAction): Promise<void> {
+  private renderKey(key: KeyAction): Promise<void> {
     return renderKeySurface(key, () =>
       renderSnoozeSyncKey(
         store.getFocusedThread(),
@@ -778,12 +944,35 @@ class SnoozeSyncAction extends SingletonAction {
       )
     );
   }
+
+  private renderDial(dial: DialAction): Promise<void> {
+    return renderDialSurface(dial, () => {
+      const presets = store.getResolvedSnoozePresets();
+      const idx = store.snoozeDialIndex % Math.max(1, presets.length);
+      const preset = presets[idx] ?? store.getDefaultSnoozePreset();
+      return renderSnoozeDialCanvas(
+        store.getFocusedThread(),
+        preset.label,
+        preset.sublabel,
+        idx,
+        presets.length,
+        store.connectionState === "connected",
+        store.getToast("snooze-dial")
+      );
+    });
+  }
 }
 
 @action({ UUID: `${PLUGIN_ID}.thread-slot` })
 class ThreadSlotAction extends SingletonAction {
   override onWillAppear(ev: WillAppearEvent): void | Promise<void> {
-    if (ev.action.isKey()) return this.render(ev.action);
+    if (ev.action.isKey()) {
+      this.refreshAll();
+    }
+  }
+
+  override onWillDisappear(): void {
+    this.refreshAll();
   }
 
   override onKeyDown(ev: KeyDownEvent): void {
@@ -795,9 +984,11 @@ class ThreadSlotAction extends SingletonAction {
       void ev.action.showAlert();
       return;
     }
+    const slot = keySlot(ev.action, idx);
+    const deviceId = geometryForAction(ev.action).deviceId;
     store.focusThread(thread.id);
-    if (store.openApprovalOverlay(thread.id)) return;
-    if (store.openQuestionOverlay(thread.id)) return;
+    if (store.openApprovalOverlay(thread.id, slot, deviceId)) return;
+    if (store.openQuestionOverlay(thread.id, slot, deviceId)) return;
     openThreadInApp(store.environmentId, thread.id);
   }
 
@@ -811,9 +1002,26 @@ class ThreadSlotAction extends SingletonAction {
     });
   }
 
+  /**
+   * Auto-numbers all placed Thread Slot keys on the same device in reading order (row, col),
+   * so MK.2's 3-slot column, XL's 16-slot Fleet Wall, and Plus XL's 20-slot wall map cleanly to #1..#N.
+   */
   private slotIndex(key: KeyAction): number {
-    const coords = key.coordinates;
-    return coords ? coords.row * 4 + coords.column : 0;
+    const deviceId = geometryForAction(key).deviceId;
+    const peers: KeyAction[] = [];
+    this.actions.forEach((a) => {
+      if (a.isKey() && geometryForAction(a).deviceId === deviceId) {
+        peers.push(a);
+      }
+    });
+    peers.sort((a, b) => {
+      const ar = a.coordinates?.row ?? 0;
+      const br = b.coordinates?.row ?? 0;
+      if (ar !== br) return ar - br;
+      return (a.coordinates?.column ?? 0) - (b.coordinates?.column ?? 0);
+    });
+    const idx = peers.findIndex((p) => p.id === key.id);
+    return idx >= 0 ? idx : 0;
   }
 
   private render(key: KeyAction): Promise<void> {
@@ -832,13 +1040,30 @@ class ThreadSlotAction extends SingletonAction {
 }
 
 // ============================================================
-// FULL-CANVAS DIAL ACTIONS (Stream Deck+ Panoramic Touch Strip)
+// DUAL-CONTROLLER DIAL & KEYPAD ACTIONS (All Stream Deck Devices)
 // ============================================================
 
 @action({ UUID: `${PLUGIN_ID}.thread-dial` })
 class ThreadDialAction extends SingletonAction {
   override onWillAppear(ev: WillAppearEvent): void | Promise<void> {
-    if (ev.action.isDial()) return this.render(ev.action);
+    if (ev.action.isDial()) return this.renderDial(ev.action);
+    if (ev.action.isKey()) return this.renderKey(ev.action);
+  }
+
+  override onKeyDown(ev: KeyDownEvent): void {
+    if (routeOverlayKeyDown(ev)) return;
+    const slot = keySlot(ev.action, 0);
+    const deviceId = geometryForAction(ev.action).deviceId;
+    pressTracker.down(ev.action.id, () => {
+      store.openFleetOverlay(slot, deviceId);
+    });
+  }
+
+  override onKeyUp(ev: KeyUpEvent): void {
+    if (routeOverlayKeyUp(ev)) return;
+    pressTracker.up(ev.action.id, () => {
+      store.stepFocus(1);
+    });
   }
 
   override onDialRotate(ev: DialRotateEvent): void {
@@ -865,11 +1090,29 @@ class ThreadDialAction extends SingletonAction {
 
   refreshAll(): void {
     this.actions.forEach((a) => {
-      if (a.isDial()) void this.render(a);
+      if (a.isDial()) void this.renderDial(a);
+      else if (a.isKey()) void this.renderKey(a);
     });
   }
 
-  private render(dial: DialAction): Promise<void> {
+  private renderKey(key: KeyAction): Promise<void> {
+    return renderKeySurface(key, () => {
+      const thread = store.getFocusedThread();
+      const { index, total } = store.getFocusedIndex();
+      const projectName = thread ? store.getProjectName(thread.projectId) : "";
+      return renderThreadKey(
+        thread,
+        projectName,
+        store.filterMode,
+        index,
+        total,
+        store.connectionState === "connected",
+        store.getToast("thread-dial")
+      );
+    });
+  }
+
+  private renderDial(dial: DialAction): Promise<void> {
     return renderDialSurface(dial, () => {
       const thread = store.getFocusedThread();
       const { index, total } = store.getFocusedIndex();
@@ -890,7 +1133,24 @@ class ThreadDialAction extends SingletonAction {
 @action({ UUID: `${PLUGIN_ID}.model-dial` })
 class ModelDialAction extends SingletonAction {
   override onWillAppear(ev: WillAppearEvent): void | Promise<void> {
-    if (ev.action.isDial()) return this.render(ev.action);
+    if (ev.action.isDial()) return this.renderDial(ev.action);
+    if (ev.action.isKey()) return this.renderKey(ev.action);
+  }
+
+  override onKeyDown(ev: KeyDownEvent): void {
+    if (routeOverlayKeyDown(ev)) return;
+    pressTracker.down(ev.action.id, () => {
+      this.toggleScope();
+    });
+  }
+
+  override onKeyUp(ev: KeyUpEvent): void {
+    if (routeOverlayKeyUp(ev)) return;
+    const slot = keySlot(ev.action, 1);
+    const deviceId = geometryForAction(ev.action).deviceId;
+    pressTracker.up(ev.action.id, () => {
+      store.openModelPickerOverlay(slot, deviceId);
+    });
   }
 
   override onDialRotate(ev: DialRotateEvent): void {
@@ -899,7 +1159,8 @@ class ModelDialAction extends SingletonAction {
   }
 
   override onDialDown(ev: DialDownEvent): void {
-    if (store.overlay.kind !== "none") return;
+    const geom = geometryForAction(ev.action);
+    if (store.getOverlay(geom.deviceId).kind !== "none") return;
     pressTracker.down(ev.action.id, () => {
       this.toggleScope();
     });
@@ -959,11 +1220,20 @@ class ModelDialAction extends SingletonAction {
 
   refreshAll(): void {
     this.actions.forEach((a) => {
-      if (a.isDial()) void this.render(a);
+      if (a.isDial()) void this.renderDial(a);
+      else if (a.isKey()) void this.renderKey(a);
     });
   }
 
-  private render(dial: DialAction): Promise<void> {
+  private renderKey(key: KeyAction): Promise<void> {
+    return renderKeySurface(key, () => {
+      const thread = store.getFocusedThread();
+      const { entry, scope } = store.getActiveModelEntry(thread);
+      return renderModelKey(thread, entry, scope, store.getToast("model-dial"));
+    });
+  }
+
+  private renderDial(dial: DialAction): Promise<void> {
     return renderDialSurface(dial, () => {
       const thread = store.getFocusedThread();
       const { catalog, activeIndex, entry, scope } = store.getActiveModelEntry(thread);
@@ -983,7 +1253,41 @@ class ModelDialAction extends SingletonAction {
 @action({ UUID: `${PLUGIN_ID}.mode-dial` })
 class ModeEffortDialAction extends SingletonAction {
   override onWillAppear(ev: WillAppearEvent): void | Promise<void> {
-    if (ev.action.isDial()) return this.render(ev.action);
+    if (ev.action.isDial()) return this.renderDial(ev.action);
+    if (ev.action.isKey()) return this.renderKey(ev.action);
+  }
+
+  override onKeyDown(ev: KeyDownEvent): void {
+    if (routeOverlayKeyDown(ev)) return;
+    pressTracker.down(ev.action.id, async () => {
+      const thread = store.getFocusedThread();
+      if (!thread) {
+        await ev.action.showAlert();
+        return;
+      }
+      const next = thread.interactionMode === "plan" ? "default" : "plan";
+      try {
+        await client.setInteractionMode(thread.id, next);
+        store.setToast(
+          "mode-dial",
+          next === "plan" ? "PLAN MODE ON" : "CODE MODE",
+          next === "plan" ? "#C084FC" : "#10B981",
+          1100
+        );
+      } catch (err) {
+        streamDeck.logger.error(`interaction mode toggle failed: ${String(err)}`);
+        await ev.action.showAlert();
+      }
+    });
+  }
+
+  override onKeyUp(ev: KeyUpEvent): void {
+    if (routeOverlayKeyUp(ev)) return;
+    const slot = keySlot(ev.action, 2);
+    const deviceId = geometryForAction(ev.action).deviceId;
+    pressTracker.up(ev.action.id, () => {
+      store.openModeEffortOverlay(slot, deviceId);
+    });
   }
 
   override async onDialRotate(ev: DialRotateEvent): Promise<void> {
@@ -1069,11 +1373,20 @@ class ModeEffortDialAction extends SingletonAction {
 
   refreshAll(): void {
     this.actions.forEach((a) => {
-      if (a.isDial()) void this.render(a);
+      if (a.isDial()) void this.renderDial(a);
+      else if (a.isKey()) void this.renderKey(a);
     });
   }
 
-  private render(dial: DialAction): Promise<void> {
+  private renderKey(key: KeyAction): Promise<void> {
+    return renderKeySurface(key, () => {
+      const thread = store.getFocusedThread();
+      const entry = store.getThreadModelEntry(thread);
+      return renderModeEffortKey(thread, entry, store.getToast("mode-dial"));
+    });
+  }
+
+  private renderDial(dial: DialAction): Promise<void> {
     return renderDialSurface(dial, () => {
       const thread = store.getFocusedThread();
       const entry = store.getThreadModelEntry(thread);
@@ -1085,7 +1398,22 @@ class ModeEffortDialAction extends SingletonAction {
 @action({ UUID: `${PLUGIN_ID}.usage-dial` })
 class UsageDialAction extends SingletonAction {
   override onWillAppear(ev: WillAppearEvent): void | Promise<void> {
-    if (ev.action.isDial()) return this.render(ev.action);
+    if (ev.action.isDial()) return this.renderDial(ev.action);
+    if (ev.action.isKey()) return this.renderKey(ev.action);
+  }
+
+  override onKeyDown(ev: KeyDownEvent): void {
+    if (routeOverlayKeyDown(ev)) return;
+    pressTracker.down(ev.action.id, async () => {
+      await this.refreshUsage(ev.action);
+    });
+  }
+
+  override onKeyUp(ev: KeyUpEvent): void {
+    if (routeOverlayKeyUp(ev)) return;
+    pressTracker.up(ev.action.id, () => {
+      store.stepUsageCard(1);
+    });
   }
 
   override onDialRotate(ev: DialRotateEvent): void {
@@ -1103,23 +1431,37 @@ class UsageDialAction extends SingletonAction {
     await this.refreshUsage(ev.action);
   }
 
-  private async refreshUsage(dial: DialAction): Promise<void> {
+  private async refreshUsage(target: { showAlert(): Promise<void> }): Promise<void> {
     store.setToast("usage-dial", "REFRESHING...", "#38BDF8", 1200);
     try {
       await client.refreshProviders();
     } catch (err) {
       streamDeck.logger.error(`refreshProviders failed: ${String(err)}`);
-      await dial.showAlert();
+      await target.showAlert();
     }
   }
 
   refreshAll(): void {
     this.actions.forEach((a) => {
-      if (a.isDial()) void this.render(a);
+      if (a.isDial()) void this.renderDial(a);
+      else if (a.isKey()) void this.renderKey(a);
     });
   }
 
-  private render(dial: DialAction): Promise<void> {
+  private renderKey(key: KeyAction): Promise<void> {
+    return renderKeySurface(key, () => {
+      const { card, index, total } = store.getCurrentUsageCard();
+      return renderUsageKey(
+        card,
+        index,
+        total,
+        store.connectionState === "connected",
+        store.getToast("usage-dial")
+      );
+    });
+  }
+
+  private renderDial(dial: DialAction): Promise<void> {
     return renderDialSurface(dial, () => {
       const { card, index, total } = store.getCurrentUsageCard();
       return renderUsageDialCanvas(

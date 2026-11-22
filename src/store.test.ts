@@ -8,11 +8,13 @@ import {
   T3Store
 } from "./store.js";
 import {
+  geometryFromDevice,
   handleOverlayDialRotate,
   handleOverlayDialTapOrPress,
   handleOverlayKeyPress,
   itemIndexForSlot,
   renderCompleteDeckSvgs,
+  usesVirtualTopBanner,
   type SurfaceDispatchCallbacks
 } from "./surface.js";
 import { renderThreadDialCanvas, renderUsageDialCanvas } from "./render.js";
@@ -996,4 +998,171 @@ test("renderCompleteDeckSvgs emits 8 valid key SVGs and 4 valid dial SVGs for ev
   assertValidDeck("new-chat-env");
   store.openNewChatModelOverlay("p-1", { originSlot: 4 });
   assertValidDeck("new-chat-model");
+  store.openModelPickerOverlay(1);
+  assertValidDeck("model-picker");
+  store.openModeEffortOverlay(2);
+  assertValidDeck("mode-effort");
+});
+
+test("multi-device geometry adapts across Plus XL, MK.2, XL, Neo, and Mini with independent per-device overlays", async () => {
+  const store = new T3Store();
+  store.setConnection("connected");
+  store.applyConfigSnapshot({
+    environment: { environmentId: "env-1" },
+    providers: [
+      {
+        instanceId: "claude-default",
+        driver: "claudeAgent",
+        displayName: "Claude",
+        accentColor: "#E07A5F",
+        enabled: true,
+        installed: true,
+        status: "ready",
+        models: [
+          {
+            slug: "claude-opus-5-5",
+            name: "Opus 5.5",
+            shortName: "Opus 5.5",
+            capabilities: {
+              optionDescriptors: [
+                {
+                  id: "effort",
+                  label: "Effort",
+                  type: "select",
+                  role: "reasoning",
+                  options: [
+                    { id: "low", label: "Low" },
+                    { id: "high", label: "High", isDefault: true }
+                  ]
+                }
+              ]
+            }
+          },
+          { slug: "claude-fable-5-2", name: "Fable 5.2", shortName: "Fable 5.2", capabilities: null }
+        ]
+      }
+    ],
+    settings: { favorites: [{ provider: "claudeAgent", model: "claude-opus-5-5" }] }
+  });
+
+  const t = makeThread({
+    id: "t-multi-dev",
+    projectId: "p-1",
+    title: "Deploy Worker",
+    modelSelection: { instanceId: "claude-default", model: "claude-opus-5-5" },
+    pendingRuntimeRequest: { id: "req-1", kind: "command", createdAt: "2026-11-21T10:00:00Z" }
+  });
+  store.applyShellSnapshot([{ id: "p-1", title: "lab", workspaceRoot: "/tmp/lab" }], [t], false);
+  store.applyThreadProjection("t-multi-dev", {
+    runtimeRequests: [
+      {
+        id: "req-1",
+        nodeId: "n1",
+        kind: "command",
+        status: "pending",
+        responseCapability: { type: "live" },
+        createdAt: "2026-11-21T10:00:00Z"
+      }
+    ],
+    turnItems: [
+      {
+        id: "ti-1",
+        type: "approval_request",
+        requestId: "req-1",
+        requestKind: "command",
+        prompt: "rm -rf dist && npm run build"
+      }
+    ]
+  });
+
+  const mk2 = geometryFromDevice({ id: "dev-mk2", type: 0, size: { columns: 5, rows: 3 } });
+  const mini = geometryFromDevice({ id: "dev-mini", type: 1, size: { columns: 3, rows: 2 } });
+  const xl = geometryFromDevice({ id: "dev-xl", type: 2, size: { columns: 8, rows: 4 } });
+  const neo = geometryFromDevice({ id: "dev-neo", type: 9, size: { columns: 4, rows: 2 } });
+  const plusXl = geometryFromDevice({ id: "dev-pxl", type: 13, size: { columns: 9, rows: 4 } });
+
+  assert.equal(usesVirtualTopBanner(mk2, "approval"), true);
+  assert.equal(usesVirtualTopBanner(xl, "approval"), true);
+  assert.equal(usesVirtualTopBanner(mini, "approval"), false);
+  assert.equal(usesVirtualTopBanner(neo, "approval"), false);
+  assert.equal(usesVirtualTopBanner(plusXl, "approval"), false);
+  assert.equal(plusXl.stripCols, 6);
+
+  // Open approval overlay on MK.2 while Plus XL opens model-picker independently!
+  store.openApprovalOverlay("t-multi-dev", 1, mk2.deviceId);
+  store.openModelPickerOverlay(1, plusXl.deviceId);
+  assert.equal(store.getOverlay(mk2.deviceId).kind, "approval");
+  assert.equal(store.getOverlay(plusXl.deviceId).kind, "model-picker");
+  assert.equal(store.getOverlay(mini.deviceId).kind, "none");
+
+  // MK.2 renders 15 keys with Row 0 (cols 0..4) as a 720px stitched virtual banner!
+  const mk2Deck = renderCompleteDeckSvgs(store, undefined, undefined, mk2);
+  assert.equal(mk2Deck.keys.length, 15);
+  assert.equal(mk2Deck.dials.length, 0);
+  assert.ok(mk2Deck.keys[0]!.includes('width="712"'), "MK.2 Row 0 uses 5-key 720px virtual banner");
+  assert.ok(mk2Deck.keys[0]!.includes("DANGER"));
+  assert.ok(mk2Deck.keys[5]!.includes("BACK")); // Row 1 Col 0 = BACK
+  assert.ok(mk2Deck.keys[6]!.includes("APPROVE")); // Row 1 Col 1 = APPROVE
+
+  // Plus XL renders 36 keys + 6 dials (2400px panoramic strip!)
+  const pxlDeck = renderCompleteDeckSvgs(store, undefined, undefined, plusXl);
+  assert.equal(pxlDeck.keys.length, 36);
+  assert.equal(pxlDeck.dials.length, 6);
+  assert.ok(pxlDeck.dials[5]!.includes('width="2392"'), "Plus XL extends strip to 2400px");
+
+  // Mini (3x2) compact approval overlay fits all 6 keys cleanly with inline DANGER inspect tile
+  store.openApprovalOverlay("t-multi-dev", 1, mini.deviceId);
+  const miniDeck = renderCompleteDeckSvgs(store, undefined, undefined, mini);
+  assert.equal(miniDeck.keys.length, 6);
+  assert.ok(miniDeck.keys[0]!.includes("BACK"));
+  assert.ok(miniDeck.keys[1]!.includes("APPROVE"));
+  assert.ok(miniDeck.keys[3]!.includes("DANGER"));
+
+  // Keypad-native Model Picker & Mode/Effort overlays dispatch live RPC callbacks cleanly
+  const actions: string[] = [];
+  const cb: SurfaceDispatchCallbacks = {
+    approveRequest: async () => {},
+    respondToUserInput: async () => {},
+    dismissUserInput: async () => {},
+    sendPrompt: async () => {},
+    snoozeThreadUntil: async () => {},
+    unsnoozeThread: async () => {},
+    settleToggle: async () => {},
+    pinToggle: async () => {},
+    markThreadUnread: async () => {},
+    interruptOrStop: async () => {},
+    setModelSelection: async (tid, sel) => {
+      actions.push(`model:${tid}:${sel.model}:${JSON.stringify(sel.options ?? [])}`);
+    },
+    setRuntimeMode: async (tid, mode) => {
+      actions.push(`runtime:${tid}:${mode}`);
+    },
+    setInteractionMode: async (tid, mode) => {
+      actions.push(`interaction:${tid}:${mode}`);
+    },
+    createAndOpenThread: async () => {},
+    openThread: () => {},
+    openUrl: () => {},
+    resync: async () => {}
+  };
+
+  // On Plus XL model-picker (originSlot = 1): slot 0 = idx 0 (FAVS/ALL toggle), slot 2 = idx 1 (1st model)
+  await handleOverlayKeyPress(store, 0, 0, false, cb, plusXl); // FAVS -> ALL
+  await handleOverlayKeyPress(store, 3, 0, false, cb, plusXl); // idx 2 -> 2nd model (Fable 5.2)
+  assert.equal(actions[0], "model:t-multi-dev:claude-fable-5-2:[]");
+  assert.equal(store.getOverlay(plusXl.deviceId).kind, "none");
+
+  // On XL (8x4) mode-effort (originSlot = 0): slot 1 = idx 0 (PLAN/CODE), slot 2 = idx 1 (ASK)
+  store.openModeEffortOverlay(0, xl.deviceId);
+  const xlModeDeck = renderCompleteDeckSvgs(store, undefined, undefined, xl);
+  assert.equal(xlModeDeck.keys.length, 32);
+  assert.ok(xlModeDeck.keys[0]!.includes("BACK"));
+  assert.ok(xlModeDeck.keys[1]!.includes("CODE MODE"));
+  await handleOverlayKeyPress(store, 1, 0, false, cb, xl); // toggle PLAN
+  assert.equal(actions[1], "interaction:t-multi-dev:plan");
+
+  // Approving on MK.2 reconciles and closes BOTH MK.2 and Mini approval overlays!
+  store.markRequestResolvedLocally("t-multi-dev", "req-1");
+  assert.equal(store.getOverlay(mk2.deviceId).kind, "none");
+  assert.equal(store.getOverlay(mini.deviceId).kind, "none");
 });

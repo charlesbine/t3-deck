@@ -79,8 +79,18 @@
     },
     {
       "Controllers": [
-        "Keypad"
+        "Keypad",
+        "Encoder"
       ],
+      "Encoder": {
+        "Icon": "imgs/action-prompt",
+        "TriggerDescription": {
+          "Push": "Send or steer selected prompt",
+          "Rotate": "Scrub AI Next & quick prompt presets",
+          "Touch": "Send or steer selected prompt"
+        },
+        "layout": "layouts/t3-canvas-dial.json"
+      },
       "Icon": "imgs/action-prompt",
       "Name": "Send / Steer Prompt",
       "PropertyInspectorPath": "ui/quick-prompt.html",
@@ -90,7 +100,7 @@
           "ShowTitle": false
         }
       ],
-      "Tooltip": "Short press: send/steer configured prompt. Hold: open Quick Prompts drawer with live AI-predicted next prompt.",
+      "Tooltip": "Short press: send/steer configured prompt. Hold: open Quick Prompts drawer with live AI-predicted next prompt. Dial: scrub & send prompts.",
       "UUID": "com.charlesbine.t3-deck.quick-prompt"
     },
     {
@@ -110,8 +120,18 @@
     },
     {
       "Controllers": [
-        "Keypad"
+        "Keypad",
+        "Encoder"
       ],
+      "Encoder": {
+        "Icon": "imgs/action-snooze",
+        "TriggerDescription": {
+          "Push": "Snooze with selected preset (or unsnooze)",
+          "Rotate": "Scrub T3 Code snooze presets",
+          "Touch": "Snooze with selected preset (or unsnooze)"
+        },
+        "layout": "layouts/t3-canvas-dial.json"
+      },
       "Icon": "imgs/action-snooze",
       "Name": "Snooze / Sync",
       "States": [
@@ -120,7 +140,7 @@
           "ShowTitle": false
         }
       ],
-      "Tooltip": "Short press: snooze with your default T3 preset (or unsnooze). Hold: open all T3 snooze presets + custom dial scrubber.",
+      "Tooltip": "Short press: snooze with your default T3 preset (or unsnooze). Hold: open all T3 snooze presets + custom dial scrubber. Dial: scrub & apply presets.",
       "UUID": "com.charlesbine.t3-deck.snooze-sync"
     },
     {
@@ -135,11 +155,12 @@
           "ShowTitle": false
         }
       ],
-      "Tooltip": "Displays and opens the thread at this key's slot index.",
+      "Tooltip": "Displays and opens the thread at this key's auto-numbered slot index.",
       "UUID": "com.charlesbine.t3-deck.thread-slot"
     },
     {
       "Controllers": [
+        "Keypad",
         "Encoder"
       ],
       "Encoder": {
@@ -159,11 +180,12 @@
           "ShowTitle": false
         }
       ],
-      "Tooltip": "Scrub T3 Code threads across all projects with live status, project, and PR badges.",
+      "Tooltip": "Dial: scrub threads. Key: tap to step to next thread, hold to open Fleet Switchboard.",
       "UUID": "com.charlesbine.t3-deck.thread-dial"
     },
     {
       "Controllers": [
+        "Keypad",
         "Encoder"
       ],
       "Encoder": {
@@ -183,11 +205,12 @@
           "ShowTitle": false
         }
       ],
-      "Tooltip": "Switch models and providers (Claude, Codex, Antigravity, OpenCode) on the focused thread.",
+      "Tooltip": "Dial: scrub & apply models. Key: tap to open Model Picker overlay, hold to toggle Favorites vs All.",
       "UUID": "com.charlesbine.t3-deck.model-dial"
     },
     {
       "Controllers": [
+        "Keypad",
         "Encoder"
       ],
       "Encoder": {
@@ -207,11 +230,12 @@
           "ShowTitle": false
         }
       ],
-      "Tooltip": "Adjust reasoning effort, runtime permissions, and Plan Mode on the focused thread.",
+      "Tooltip": "Dial: adjust effort, runtime mode, and Plan Mode. Key: tap to open Mode & Effort picker, hold to toggle Plan Mode.",
       "UUID": "com.charlesbine.t3-deck.mode-dial"
     },
     {
       "Controllers": [
+        "Keypad",
         "Encoder"
       ],
       "Encoder": {
@@ -231,7 +255,7 @@
           "ShowTitle": false
         }
       ],
-      "Tooltip": "Live session and weekly utilization gauges across all connected T3 Code providers.",
+      "Tooltip": "Live session and weekly utilization gauges across all connected T3 Code providers. Key: tap to cycle, hold to refresh.",
       "UUID": "com.charlesbine.t3-deck.usage-dial"
     }
   ],
@@ -239,7 +263,7 @@
   "Category": "T3 Deck",
   "CategoryIcon": "imgs/category",
   "CodePath": "bin/plugin.js",
-  "Description": "Real-time T3 Code mission control for Stream Deck+: panoramic 2-step approvals, interactive question cards, 4-knob New Chat builder, multi-provider switching, and usage gauges.",
+  "Description": "Real-time T3 Code mission control for Elgato Stream Deck (+, + XL, MK.2, XL, Neo, Mini): panoramic 2-step approvals, interactive question cards, New Chat builder, multi-provider switching, and usage gauges.",
   "Icon": "imgs/plugin",
   "Name": "T3 Deck",
   "Nodejs": {
@@ -258,6 +282,36 @@
       "DontAutoSwitchWhenInstalled": true,
       "Name": "profiles/t3-deck-plus",
       "Readonly": false
+    },
+    {
+      "DeviceType": 13,
+      "DontAutoSwitchWhenInstalled": true,
+      "Name": "profiles/t3-deck-plus-xl",
+      "Readonly": false
+    },
+    {
+      "DeviceType": 0,
+      "DontAutoSwitchWhenInstalled": true,
+      "Name": "profiles/t3-deck-mk2",
+      "Readonly": false
+    },
+    {
+      "DeviceType": 2,
+      "DontAutoSwitchWhenInstalled": true,
+      "Name": "profiles/t3-deck-xl",
+      "Readonly": false
+    },
+    {
+      "DeviceType": 9,
+      "DontAutoSwitchWhenInstalled": true,
+      "Name": "profiles/t3-deck-neo",
+      "Readonly": false
+    },
+    {
+      "DeviceType": 1,
+      "DontAutoSwitchWhenInstalled": true,
+      "Name": "profiles/t3-deck-mini",
+      "Readonly": false
     }
   ],
   "SDKVersion": 2,
@@ -265,5 +319,5 @@
     "MinimumVersion": "7.1"
   },
   "UUID": "com.charlesbine.t3-deck",
-  "Version": "1.1.0.0"
+  "Version": "1.2.0.0"
 }

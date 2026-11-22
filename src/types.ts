@@ -440,4 +440,22 @@ export type DeckOverlay =
       originSlot: number;
       parentKind: "none" | "new-chat-project" | "new-chat-env";
       parentOriginSlot: number;
+    }
+  | {
+      kind: "model-picker";
+      originSlot: number;
+      page: number;
+      scope: ModelCatalogScope;
+    }
+  | {
+      kind: "mode-effort";
+      originSlot: number;
     };
+
+export interface SurfaceGeometry {
+  deviceId: string;
+  deviceType: number;
+  cols: number;
+  rows: number;
+  stripCols: number;
+}
