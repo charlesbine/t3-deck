@@ -92,9 +92,13 @@ export interface ProjectShell {
   id: string;
   title: string;
   workspaceRoot: string;
+  defaultModelSelection?: ModelSelection | null;
+  defaultThreadEnvMode?: "local" | "worktree" | null;
   pinnedAt?: string | null;
   archivedAt?: string | null;
   deletedAt?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface ProviderOptionChoice {
@@ -186,9 +190,22 @@ export interface ProviderModelPreference {
   hiddenModels?: string[];
 }
 
+export type SnoozePresetSetting =
+  | { kind: "after"; minutes: number }
+  | { kind: "at"; day: string; time: string };
+
+export interface ResolvedSnoozePreset {
+  id: string;
+  label: string;
+  shortLabel: string;
+  sublabel: string;
+  snoozedUntilIso: string;
+}
+
 export interface ServerSettingsPayload {
   favorites?: ModelFavorite[] | null;
   providerModelPreferences?: Record<string, ProviderModelPreference> | null;
+  snoozePresets?: SnoozePresetSetting[] | null;
 }
 
 export interface ServerConfigPayload {
@@ -238,6 +255,10 @@ export interface UsageCard {
   weeklyWindow?: UsageWindow;
   extraWindow?: UsageWindow;
   checkedAt?: string;
+  unavailable?: {
+    reason: string;
+    message?: string;
+  };
 }
 
 export interface FleetStats {
@@ -256,3 +277,167 @@ export interface QuickPromptSettings {
   mode?: "auto" | "steer" | "queue";
   [key: string]: string | number | boolean | undefined;
 }
+
+export type NewThreadFirstPicker = "project" | "environment" | "model";
+
+export interface NewThreadSettings {
+  firstPicker?: NewThreadFirstPicker;
+  defaultInteractionMode?: ProviderInteractionMode;
+  [key: string]: string | number | boolean | undefined;
+}
+
+export interface PeerLinkSummary {
+  environmentId: string;
+  label: string;
+}
+
+// ---- Thread projection & overlay types ----
+
+export interface ProviderApprovalOption {
+  id?: string;
+  decision?: ProviderApprovalDecision;
+  label?: string;
+  description?: string;
+}
+
+export interface ProjectionRuntimeRequest {
+  id: string;
+  nodeId: string;
+  kind: ProviderRequestKind;
+  status: "pending" | "resolved" | "expired" | "cancelled";
+  responseCapability:
+    | { type: "live"; providerSessionId?: string; supportsFeedback?: boolean }
+    | { type: "message" }
+    | { type: "not_resumable"; reason?: string };
+  createdAt: string;
+  resolvedAt?: string | null;
+}
+
+export interface ProjectionQuestionOption {
+  label: string;
+  description?: string;
+}
+
+export interface ProjectionUserInputQuestion {
+  id: string;
+  header: string;
+  question: string;
+  options: ProjectionQuestionOption[];
+  multiSelect?: boolean;
+  allowCustomAnswer?: boolean;
+}
+
+export interface ProjectionTurnItem {
+  id: string;
+  nodeId?: string;
+  type: string;
+  requestId?: string;
+  requestKind?: ProviderRequestKind;
+  prompt?: string;
+  reason?: string;
+  fullAccessOverride?: string;
+  appName?: string;
+  options?: ProviderApprovalOption[];
+  questions?: ProjectionUserInputQuestion[];
+  responseMode?: "message";
+}
+
+export interface ProjectionSubagent {
+  id: string;
+  title?: string | null;
+  prompt?: string;
+  model?: string | null;
+  status?: string;
+  childThreadId?: string | null;
+  progress?: string;
+}
+
+export interface ThreadProjectionPayload {
+  runtimeRequests?: ProjectionRuntimeRequest[];
+  turnItems?: ProjectionTurnItem[];
+  subagents?: ProjectionSubagent[];
+}
+
+export interface PendingApprovalItem {
+  threadId: string;
+  requestId: string;
+  nodeId?: string;
+  requestKind: ProviderRequestKind;
+  createdAt: string;
+  threadTitle: string;
+  projectName: string;
+  subagentTitle?: string;
+  parentThreadTitle?: string;
+  prompt?: string;
+  reason?: string;
+  appName?: string;
+  fullAccessOverride?: string;
+  options?: ProviderApprovalOption[];
+  responseCapability: "live" | "not_resumable";
+  dangerous: boolean;
+  dangerReason?: string;
+  detailsLoaded: boolean;
+}
+
+export interface PendingQuestionItem {
+  threadId: string;
+  requestId: string;
+  createdAt: string;
+  threadTitle: string;
+  projectName: string;
+  subagentTitle?: string;
+  parentThreadTitle?: string;
+  questions: ProjectionUserInputQuestion[];
+  dismissible: boolean;
+  detailsLoaded: boolean;
+}
+
+export interface PromptSuggestion {
+  threadId: string;
+  runId: string;
+  text: string;
+}
+
+export type DeckOverlay =
+  | { kind: "none" }
+  | { kind: "approval"; requestId: string | null; scrollLine: number; originSlot: number }
+  | {
+      kind: "question";
+      requestId: string | null;
+      questionIndex: number;
+      optionPage: number;
+      selectedByQuestionId: Record<string, string[]>;
+      originSlot: number;
+    }
+  | { kind: "prompts"; originSlot: number; selectedIndex: number }
+  | { kind: "snooze"; originSlot: number; customMinutes: number | null }
+  | { kind: "fleet"; page: number; originSlot: number }
+  | { kind: "thread-tools"; originSlot: number }
+  | {
+      kind: "new-chat-builder";
+      originSlot: number;
+      projectIndex: number;
+      modelIndex: number;
+      modelScope: ModelCatalogScope;
+      workspaceMode: "local" | "worktree" | "scratch";
+      interactionMode: ProviderInteractionMode;
+      keyMode: "project" | "environment" | "model";
+    }
+  | { kind: "new-chat-project"; page: number; originSlot: number; interactionMode: ProviderInteractionMode }
+  | {
+      kind: "new-chat-env";
+      page: number;
+      originSlot: number;
+      interactionMode: ProviderInteractionMode;
+    }
+  | {
+      kind: "new-chat-model";
+      projectId: string;
+      workspaceMode: "local" | "worktree" | "scratch";
+      page: number;
+      scope: ModelCatalogScope;
+      interactionMode: ProviderInteractionMode;
+      originSlot: number;
+      parentKind: "none" | "new-chat-project" | "new-chat-env";
+      parentOriginSlot: number;
+    };

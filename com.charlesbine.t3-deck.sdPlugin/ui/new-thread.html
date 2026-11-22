@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>T3 New Chat</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+        font-size: 12px;
+      }
+      body {
+        margin: 0;
+        padding: 12px;
+        background: #2d2d2d;
+        color: #e5e7eb;
+      }
+      .field {
+        margin-bottom: 12px;
+      }
+      label {
+        display: block;
+        margin-bottom: 4px;
+        font-size: 11px;
+        font-weight: 600;
+        color: #9ca3af;
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+      }
+      select {
+        width: 100%;
+        box-sizing: border-box;
+        background: #1f232b;
+        color: #f3f4f6;
+        border: 1px solid #3f4756;
+        border-radius: 6px;
+        padding: 6px 8px;
+        font: inherit;
+      }
+      .hint {
+        margin-top: 5px;
+        font-size: 11px;
+        line-height: 1.4;
+        color: #9ca3af;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="field">
+      <label for="firstPicker">Hold Menu: First Selector</label>
+      <select id="firstPicker">
+        <option value="project">Projects first (hold any project for Model)</option>
+        <option value="environment">Environments first (Local / Worktree / Scratch / Linked)</option>
+        <option value="model">Models first (launch in focused project)</option>
+      </select>
+      <div class="hint">
+        Short tap opens a new T3 Code composer. Hold opens this panoramic picker with BACK right under your finger.
+      </div>
+    </div>
+    <div class="field">
+      <label for="defaultMode">Default Mode</label>
+      <select id="defaultMode">
+        <option value="default">Code Mode</option>
+        <option value="plan">Plan Mode</option>
+      </select>
+    </div>
+
+    <script>
+      let ws = null;
+      let uuid = null;
+      let currentSettings = {};
+
+      const pickerEl = document.getElementById("firstPicker");
+      const modeEl = document.getElementById("defaultMode");
+
+      function syncInputs() {
+        pickerEl.value = currentSettings.firstPicker || "project";
+        modeEl.value = currentSettings.defaultInteractionMode || "default";
+      }
+
+      function saveSettings() {
+        currentSettings = {
+          firstPicker: pickerEl.value || "project",
+          defaultInteractionMode: modeEl.value || "default"
+        };
+        if (ws && ws.readyState === WebSocket.OPEN && uuid) {
+          ws.send(JSON.stringify({ event: "setSettings", context: uuid, payload: currentSettings }));
+        }
+      }
+
+      pickerEl.addEventListener("change", saveSettings);
+      modeEl.addEventListener("change", saveSettings);
+
+      window.connectElgatoStreamDeckSocket = function (inPort, inPropertyInspectorUUID, inRegisterEvent, _inInfo, inActionInfo) {
+        uuid = inPropertyInspectorUUID;
+        try {
+          const parsed = JSON.parse(inActionInfo);
+          currentSettings = (parsed && parsed.payload && parsed.payload.settings) || {};
+        } catch {}
+        syncInputs();
+
+        ws = new WebSocket("ws://127.0.0.1:" + inPort);
+        ws.onopen = function () {
+          ws.send(JSON.stringify({ event: inRegisterEvent, uuid: uuid }));
+        };
+        ws.onmessage = function (ev) {
+          try {
+            const msg = JSON.parse(ev.data);
+            if (msg.event === "didReceiveSettings" && msg.payload && msg.payload.settings) {
+              currentSettings = msg.payload.settings;
+              syncInputs();
+            }
+          } catch {}
+        };
+      };
+    </script>
+  </body>
+</html>

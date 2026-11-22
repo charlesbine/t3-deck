@@ -13,7 +13,7 @@
           "ShowTitle": false
         }
       ],
-      "Tooltip": "Live T3 Code fleet counts; press to focus and open the highest-priority thread needing you.",
+      "Tooltip": "Live T3 Code fleet counts. Short press: focus highest-priority thread (or inspect pending approval/question). Hold: open Fleet Switchboard.",
       "UUID": "com.charlesbine.t3-deck.fleet-attention"
     },
     {
@@ -28,7 +28,7 @@
           "ShowTitle": false
         }
       ],
-      "Tooltip": "Short press: approve pending permission (or open pending question). Hold: approve for session.",
+      "Tooltip": "Short press: open 2-step Panoramic Approval Inspector or Question Responder. Hold: approve for session.",
       "UUID": "com.charlesbine.t3-deck.approve"
     },
     {
@@ -58,7 +58,7 @@
           "ShowTitle": false
         }
       ],
-      "Tooltip": "Short press: toggle Settle on focused thread. Hold: toggle Pin.",
+      "Tooltip": "Short press: toggle Settle on focused thread. Hold: open Thread Tools drawer (Pin, Unread, PR, Stop, Snooze).",
       "UUID": "com.charlesbine.t3-deck.settle-pin"
     },
     {
@@ -67,13 +67,14 @@
       ],
       "Icon": "imgs/action-new",
       "Name": "New Chat",
+      "PropertyInspectorPath": "ui/new-thread.html",
       "States": [
         {
           "Image": "imgs/key-default",
           "ShowTitle": false
         }
       ],
-      "Tooltip": "Open a new T3 Code composer.",
+      "Tooltip": "Short press: create and open a new chat in the active project. Hold: open 4-knob Cockpit New Chat Builder.",
       "UUID": "com.charlesbine.t3-deck.new-thread"
     },
     {
@@ -89,7 +90,7 @@
           "ShowTitle": false
         }
       ],
-      "Tooltip": "Send or steer a configurable prompt to the focused T3 thread. Hold to open thread.",
+      "Tooltip": "Short press: send/steer configured prompt. Hold: open Quick Prompts drawer with live AI-predicted next prompt.",
       "UUID": "com.charlesbine.t3-deck.quick-prompt"
     },
     {
@@ -119,7 +120,7 @@
           "ShowTitle": false
         }
       ],
-      "Tooltip": "Short press: snooze focused thread for 1 hour (or unsnooze). Hold: reconnect and resync.",
+      "Tooltip": "Short press: snooze with your default T3 preset (or unsnooze). Hold: open all T3 snooze presets + custom dial scrubber.",
       "UUID": "com.charlesbine.t3-deck.snooze-sync"
     },
     {
@@ -238,7 +239,7 @@
   "Category": "T3 Deck",
   "CategoryIcon": "imgs/category",
   "CodePath": "bin/plugin.js",
-  "Description": "Real-time T3 Code mission control for Stream Deck+: live approvals, thread navigation, multi-provider model/effort/mode switching, and usage gauges.",
+  "Description": "Real-time T3 Code mission control for Stream Deck+: panoramic 2-step approvals, interactive question cards, 4-knob New Chat builder, multi-provider switching, and usage gauges.",
   "Icon": "imgs/plugin",
   "Name": "T3 Deck",
   "Nodejs": {
@@ -264,5 +265,5 @@
     "MinimumVersion": "7.1"
   },
   "UUID": "com.charlesbine.t3-deck",
-  "Version": "1.0.0.0"
+  "Version": "1.1.0.0"
 }

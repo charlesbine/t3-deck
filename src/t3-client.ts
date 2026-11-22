@@ -6,13 +6,16 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type {
   ModelSelection,
+  PeerLinkSummary,
   ProjectShell,
+  PromptSuggestion,
   ProviderApprovalDecision,
   ProviderInteractionMode,
   RuntimeMode,
   ServerConfigPayload,
   ServerProvider,
   ServerSettingsPayload,
+  ThreadProjectionPayload,
   ThreadShell,
   UsageLimitSourceSnapshot
 } from "./types.js";
@@ -51,6 +54,7 @@ export interface T3ClientCallbacks {
   onConfigSnapshot: (config: ServerConfigPayload) => void;
   onProvidersUpdated: (providers: ServerProvider[]) => void;
   onSettingsUpdated?: (settings: ServerSettingsPayload) => void;
+  onPeerLinksUpdated?: (links: PeerLinkSummary[]) => void;
   onUsageLimitSourcesUpdated: (sources: UsageLimitSourceSnapshot[]) => void;
   onShellSnapshot: (
     projects: ProjectShell[],
@@ -103,6 +107,8 @@ export class T3Client {
   private nextRequestId = 1;
   private pendingCalls = new Map<string, RpcPendingCall>();
   private streamHandlers = new Map<string, StreamHandler>();
+  private promptSuggestionStreamId: string | null = null;
+  private promptSuggestionThreadId: string | null = null;
   private currentOrigin: string | null = null;
 
   constructor(callbacks: T3ClientCallbacks, options: T3ClientOptions = {}) {
@@ -335,6 +341,8 @@ export class T3Client {
       this.connecting = false;
       this.reconnectAttempt = 0;
       this.streamHandlers.clear();
+      this.promptSuggestionStreamId = null;
+      this.promptSuggestionThreadId = null;
       this.callbacks.onConnectionChange("connected", runtime.origin);
       this.log("info", `Connected to T3 Code server at ${runtime.origin}`);
 
@@ -378,6 +386,24 @@ export class T3Client {
       this.callbacks.onConfigSnapshot(cfg);
     } catch (err) {
       this.log("error", `server.getConfig failed: ${String(err)}`);
+    }
+
+    // 1b. Optionally fetch linked environment names (ignored silently if disabled)
+    try {
+      const res = (await this.callRpc("peerLinks.names", {})) as {
+        links?: Array<{ environmentId?: string; label?: string; name?: string }>;
+      };
+      if (Array.isArray(res?.links)) {
+        const parsed: PeerLinkSummary[] = res.links
+          .filter((l) => typeof l.environmentId === "string" && l.environmentId.length > 0)
+          .map((l) => ({
+            environmentId: l.environmentId!,
+            label: (l.label || l.name || l.environmentId!).trim()
+          }));
+        this.callbacks.onPeerLinksUpdated?.(parsed);
+      }
+    } catch {
+      // Linked environments disabled or unsupported on this server — totally fine
     }
 
     // 2. Subscribe to real-time server config & usage limit updates
@@ -566,6 +592,60 @@ export class T3Client {
     return id;
   }
 
+  private unsubscribeStream(streamId: string): void {
+    if (!streamId) return;
+    this.streamHandlers.delete(streamId);
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ _tag: "Interrupt", requestId: streamId }));
+    }
+  }
+
+  watchPromptSuggestion(
+    threadId: string | null,
+    onSuggestion: (suggestion: PromptSuggestion | null) => void
+  ): void {
+    if (threadId === this.promptSuggestionThreadId && this.promptSuggestionStreamId) {
+      return;
+    }
+    if (this.promptSuggestionStreamId) {
+      this.unsubscribeStream(this.promptSuggestionStreamId);
+      this.promptSuggestionStreamId = null;
+    }
+    this.promptSuggestionThreadId = threadId;
+    if (!threadId || !this.isConnected) {
+      onSuggestion(null);
+      return;
+    }
+    const streamId = this.subscribeStream(
+      "orchestration.subscribePromptSuggestion",
+      { threadId },
+      (values) => {
+        for (const raw of values) {
+          if (raw === null || raw === undefined) {
+            onSuggestion(null);
+            continue;
+          }
+          const item = raw as { runId?: string; text?: string };
+          if (typeof item.text === "string" && item.text.trim().length > 0) {
+            onSuggestion({
+              threadId,
+              runId: item.runId ?? "",
+              text: item.text.trim()
+            });
+          } else {
+            onSuggestion(null);
+          }
+        }
+      }
+    );
+    this.promptSuggestionStreamId = streamId || null;
+  }
+
+  async getThreadProjection(threadId: string): Promise<ThreadProjectionPayload> {
+    const res = await this.callRpc("orchestration.getThreadProjection", { threadId });
+    return (res ?? {}) as ThreadProjectionPayload;
+  }
+
   // ---- High-level T3 Code orchestration commands ----
 
   async dispatchCommand(command: Record<string, unknown>): Promise<unknown> {
@@ -584,6 +664,95 @@ export class T3Client {
       requestId,
       decision
     });
+  }
+
+  async respondToUserInput(
+    threadId: string,
+    requestId: string,
+    answers: Record<string, string | string[]>
+  ): Promise<void> {
+    await this.dispatchCommand({
+      type: "runtime-request.respond",
+      commandId: newId("cmd"),
+      threadId,
+      requestId,
+      answers
+    });
+  }
+
+  async dismissUserInput(threadId: string, requestId: string): Promise<void> {
+    await this.dispatchCommand({
+      type: "thread.user-input.dismiss",
+      commandId: newId("cmd"),
+      threadId,
+      requestId
+    });
+  }
+
+  async markThreadUnread(threadId: string): Promise<void> {
+    await this.dispatchCommand({
+      type: "thread.mark-unread",
+      commandId: newId("cmd"),
+      threadId
+    });
+  }
+
+  async createThread(input: {
+    projectId: string;
+    title?: string;
+    modelSelection: ModelSelection;
+    runtimeMode?: RuntimeMode;
+    interactionMode?: ProviderInteractionMode;
+    workspaceMode?: "local" | "worktree" | "scratch";
+  }): Promise<string> {
+    let targetProjectId = input.projectId;
+    if (input.workspaceMode === "scratch") {
+      try {
+        const res = (await this.callRpc("projects.ensureScratch", {})) as {
+          projectId?: string;
+          project?: { id?: string };
+        };
+        const scratchId = res?.projectId ?? res?.project?.id;
+        if (scratchId) targetProjectId = scratchId;
+      } catch {
+        // fallback to provided projectId
+      }
+    }
+
+    if (input.workspaceMode === "worktree") {
+      try {
+        const launched = (await this.callRpc("orchestration.launchThread", {
+          commandId: newId("cmd"),
+          creationSource: "web",
+          projectId: targetProjectId,
+          title: input.title || "New thread",
+          modelSelection: input.modelSelection,
+          runtimeMode: input.runtimeMode ?? "auto",
+          interactionMode: input.interactionMode ?? "default",
+          workspaceStrategy: { type: "worktree", baseRef: "HEAD", startFromOrigin: false }
+        })) as { threadId?: string };
+        if (launched?.threadId) return launched.threadId;
+      } catch {
+        // Fallback to standard thread.create if repo is not a git repo or HEAD unavailable
+      }
+    }
+
+    const threadId = crypto.randomUUID();
+    await this.dispatchCommand({
+      type: "thread.create",
+      commandId: newId("cmd"),
+      createdBy: "user",
+      creationSource: "web",
+      threadId,
+      projectId: targetProjectId,
+      title: input.title || "New thread",
+      modelSelection: input.modelSelection,
+      runtimeMode: input.runtimeMode ?? "auto",
+      interactionMode: input.interactionMode ?? "default",
+      branch: null,
+      worktreePath: null
+    });
+    return threadId;
   }
 
   async interruptRun(threadId: string, runId: string): Promise<void> {
@@ -665,11 +834,15 @@ export class T3Client {
 
   async snoozeThread(threadId: string, durationHours = 1): Promise<void> {
     const until = new Date(Date.now() + durationHours * 3_600_000).toISOString();
+    await this.snoozeThreadUntil(threadId, until);
+  }
+
+  async snoozeThreadUntil(threadId: string, snoozedUntilIso: string): Promise<void> {
     await this.dispatchCommand({
       type: "thread.snooze",
       commandId: newId("cmd"),
       threadId,
-      snoozedUntil: until
+      snoozedUntil: snoozedUntilIso
     });
   }
 
@@ -700,6 +873,8 @@ export class T3Client {
     await this.dispatchCommand({
       type: "message.dispatch",
       commandId: newId("cmd"),
+      createdBy: "user",
+      creationSource: "web",
       threadId,
       messageId: newId("msg"),
       text,
