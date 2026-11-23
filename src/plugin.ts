@@ -71,7 +71,7 @@ import type {
 } from "./types.js";
 
 const PLUGIN_ID = "com.charlesbine.t3-deck";
-const LONG_PRESS_MS = 650;
+const LONG_PRESS_MS = 450;
 
 function openUrl(url: string): void {
   const child = spawn("/usr/bin/open", [url], { detached: true, stdio: "ignore" });
@@ -590,21 +590,31 @@ function setDialSvg(dial: DialAction, svg: string): Promise<void> {
 }
 
 function renderKeySurface(key: KeyAction, baseSvg: () => string): Promise<void> {
-  const geom = geometryForAction(key);
-  if (store.getOverlay(geom.deviceId).kind !== "none" && key.coordinates) {
-    const ovSvg = renderOverlayKeySvg(store, key.coordinates.column, key.coordinates.row, geom);
-    if (ovSvg) return setKeySvg(key, ovSvg);
+  try {
+    const geom = geometryForAction(key);
+    if (store.getOverlay(geom.deviceId).kind !== "none" && key.coordinates) {
+      const ovSvg = renderOverlayKeySvg(store, key.coordinates.column, key.coordinates.row, geom);
+      if (ovSvg) return setKeySvg(key, ovSvg);
+    }
+    return setKeySvg(key, baseSvg());
+  } catch (err) {
+    streamDeck.logger.error(`renderKeySurface failed (${key.manifestId}): ${String(err)}`);
+    return Promise.resolve();
   }
-  return setKeySvg(key, baseSvg());
 }
 
 function renderDialSurface(dial: DialAction, baseSvg: () => string): Promise<void> {
-  const geom = geometryForAction(dial);
-  if (store.getOverlay(geom.deviceId).kind !== "none") {
-    const ovSvg = renderOverlayDialSvg(store, dial.coordinates.column, geom);
-    if (ovSvg) return setDialSvg(dial, ovSvg);
+  try {
+    const geom = geometryForAction(dial);
+    if (store.getOverlay(geom.deviceId).kind !== "none") {
+      const ovSvg = renderOverlayDialSvg(store, dial.coordinates.column, geom);
+      if (ovSvg) return setDialSvg(dial, ovSvg);
+    }
+    return setDialSvg(dial, baseSvg());
+  } catch (err) {
+    streamDeck.logger.error(`renderDialSurface failed (${dial.manifestId}): ${String(err)}`);
+    return Promise.resolve();
   }
-  return setDialSvg(dial, baseSvg());
 }
 
 function routeOverlayKeyDown(ev: KeyDownEvent): boolean {
@@ -1034,6 +1044,7 @@ class QuickPromptAction extends SingletonAction<QuickPromptSettings> {
     const slot = keySlot(ev.action, 5);
     const deviceId = geometryForAction(ev.action).deviceId;
     pressTracker.down(ev.action.id, () => {
+      streamDeck.logger.info(`Opening Quick Prompts overlay (slot=${slot}, device=${deviceId})`);
       store.openPromptsOverlay(slot, deviceId);
     });
   }
