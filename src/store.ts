@@ -519,6 +519,8 @@ export class T3Store {
   focusedThreadId: string | null = null;
   private lastAppOpenedThreadId: string | null = null;
   private lastManualScrubAt = 0;
+  scrubIdleReturnMs = 20_000;
+  private scrubReturnTimer: NodeJS.Timeout | null = null;
   usageIndex = 0;
   promptDialIndex = 0;
   snoozeDialIndex = 0;
@@ -546,6 +548,9 @@ export class T3Store {
       this.overlays.delete(deviceId);
     } else {
       this.overlays.set(deviceId, next);
+    }
+    if (this.isPeekingAway()) {
+      this.scheduleScrubReturnTimer();
     }
   }
 
@@ -721,6 +726,7 @@ export class T3Store {
 
         if (switchedByOpen || switchedByVisitOnDifferentThread) {
           this.lastAppOpenedThreadId = thread.id;
+          this.clearScrubReturnTimer();
           if (this.focusedThreadId !== thread.id) {
             this.focusedThreadId = thread.id;
             this.clearPendingModel();
@@ -956,9 +962,74 @@ export class T3Store {
     return attention.find((t) => isApprovalRequest(t) || isQuestionRequest(t)) ?? null;
   }
 
+  getCurrentAppThread(): ThreadShell | null {
+    if (this.lastAppOpenedThreadId) {
+      const current = this.threads.get(this.lastAppOpenedThreadId);
+      if (current && !current.deletedAt && !current.archivedAt) {
+        return current;
+      }
+    }
+    return this.findMostRecentlyVisitedThread();
+  }
+
+  isPeekingAway(): boolean {
+    const current = this.getCurrentAppThread();
+    const focused = this.getFocusedThread();
+    return Boolean(current && focused && current.id !== focused.id);
+  }
+
+  clearScrubReturnTimer(): void {
+    if (this.scrubReturnTimer) {
+      clearTimeout(this.scrubReturnTimer);
+      this.scrubReturnTimer = null;
+    }
+  }
+
+  scheduleScrubReturnTimer(): void {
+    this.clearScrubReturnTimer();
+    if (this.scrubIdleReturnMs <= 0 || !this.isPeekingAway()) return;
+    this.scrubReturnTimer = setTimeout(() => {
+      this.scrubReturnTimer = null;
+      // Never yank focus away while the user has an interactive overlay open.
+      if (this.overlays.size > 0) {
+        this.scheduleScrubReturnTimer();
+        return;
+      }
+      this.returnToCurrentThread();
+    }, this.scrubIdleReturnMs);
+    this.scrubReturnTimer.unref?.();
+  }
+
+  markCurrentAppThread(threadId: string): void {
+    if (this.threads.has(threadId)) {
+      this.lastAppOpenedThreadId = threadId;
+      this.focusedThreadId = threadId;
+      this.clearScrubReturnTimer();
+      this.clearPendingModel();
+      this.emit();
+    }
+  }
+
+  returnToCurrentThread(): ThreadShell | null {
+    this.clearScrubReturnTimer();
+    const current = this.getCurrentAppThread();
+    if (!current) return null;
+    if (this.focusedThreadId !== current.id) {
+      this.focusedThreadId = current.id;
+      this.clearPendingModel();
+      this.emit();
+    }
+    return current;
+  }
+
   focusThread(threadId: string): void {
     this.focusedThreadId = threadId;
     this.clearPendingModel();
+    if (this.isPeekingAway()) {
+      this.scheduleScrubReturnTimer();
+    } else {
+      this.clearScrubReturnTimer();
+    }
     this.emit();
   }
 
@@ -973,6 +1044,11 @@ export class T3Store {
       this.focusedThreadId = next.id;
       this.lastManualScrubAt = Date.now();
       this.clearPendingModel();
+      if (this.isPeekingAway()) {
+        this.scheduleScrubReturnTimer();
+      } else {
+        this.clearScrubReturnTimer();
+      }
       this.emit();
     }
     return next;
@@ -1855,6 +1931,54 @@ export class T3Store {
     return this.getFullModelCatalog();
   }
 
+  openVoiceOverlay(
+    originSlot = 5,
+    deviceId = "default",
+    opts: {
+      threadId?: string;
+      sendMode?: "auto" | "steer" | "queue";
+      autoSend?: boolean;
+      usePostProcess?: boolean;
+      existingDraft?: string;
+      phase?: Extract<DeckOverlay, { kind: "voice" }>["phase"];
+    } = {}
+  ): boolean {
+    const thread = opts.threadId
+      ? (this.threads.get(opts.threadId) ?? this.getFocusedThread())
+      : this.getFocusedThread();
+    if (!thread) return false;
+    this.focusedThreadId = thread.id;
+    const baseDraft = (opts.existingDraft ?? "").trim();
+    this.setOverlayFor(deviceId, {
+      kind: "voice",
+      originSlot,
+      threadId: thread.id,
+      phase: opts.phase ?? "listening",
+      startedAt: Date.now(),
+      durationSec: 0,
+      level: 0,
+      committed: baseDraft,
+      tentative: "",
+      draftText: baseDraft,
+      sendMode: opts.sendMode ?? "auto",
+      autoSend: opts.autoSend ?? false,
+      usePostProcess: opts.usePostProcess ?? false,
+      scrollLine: 0
+    });
+    this.emit();
+    return true;
+  }
+
+  updateVoiceOverlay(
+    deviceId: string,
+    patch: Partial<Omit<Extract<DeckOverlay, { kind: "voice" }>, "kind">>
+  ): void {
+    const ov = this.getOverlay(deviceId);
+    if (ov.kind !== "voice") return;
+    this.setOverlayFor(deviceId, { ...ov, ...patch });
+    this.emit();
+  }
+
   closeOverlay(deviceId = "default"): void {
     if (this.getOverlay(deviceId).kind === "none") return;
     this.setOverlayFor(deviceId, { kind: "none" });
@@ -1877,6 +2001,13 @@ export class T3Store {
       const next = queue[nextIdx]!;
       this.setOverlayFor(deviceId, { ...ov, requestId: next.requestId, scrollLine: 0 });
       this.focusedThreadId = next.threadId;
+      this.emit();
+      return;
+    }
+
+    if (ov.kind === "voice") {
+      const nextScroll = Math.max(0, ov.scrollLine + ticks);
+      this.setOverlayFor(deviceId, { ...ov, scrollLine: nextScroll });
       this.emit();
       return;
     }
@@ -1952,6 +2083,13 @@ export class T3Store {
   scrollOverlay(ticks: number, deviceId = "default", optionsPerPage = 4): void {
     const ov = this.getOverlay(deviceId);
     if (ov.kind === "approval") {
+      const nextScroll = Math.max(0, ov.scrollLine + ticks);
+      this.setOverlayFor(deviceId, { ...ov, scrollLine: nextScroll });
+      this.emit();
+      return;
+    }
+
+    if (ov.kind === "voice") {
       const nextScroll = Math.max(0, ov.scrollLine + ticks);
       this.setOverlayFor(deviceId, { ...ov, scrollLine: nextScroll });
       this.emit();

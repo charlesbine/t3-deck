@@ -33,6 +33,8 @@ import {
   renderThreadSlotKey,
   renderUsageDialCanvas,
   renderUsageKey,
+  renderVoiceDialCanvas,
+  renderVoiceKey,
   svgDataUri
 } from "./render.js";
 import {
@@ -59,7 +61,8 @@ import {
   renderOverlayKeySvg,
   type SurfaceDispatchCallbacks
 } from "./surface.js";
-import { T3Client } from "./t3-client.js";
+import { T3Client, type VoiceStreamHandle } from "./t3-client.js";
+import { defaultSpeechOptions, MicRecorder } from "./voice.js";
 import type {
   NewThreadSettings,
   QuickPromptSettings,
@@ -68,7 +71,7 @@ import type {
 } from "./types.js";
 
 const PLUGIN_ID = "com.charlesbine.t3-deck";
-const LONG_PRESS_MS = 650;
+const LONG_PRESS_MS = 450;
 
 function openUrl(url: string): void {
   const child = spawn("/usr/bin/open", [url], { detached: true, stdio: "ignore" });
@@ -76,6 +79,7 @@ function openUrl(url: string): void {
 }
 
 function openThreadInApp(envId: string | null, threadId: string): void {
+  store.markCurrentAppThread(threadId);
   if (envId) {
     openUrl(`t3code://threads/${encodeURIComponent(envId)}/${encodeURIComponent(threadId)}`);
   } else {
@@ -209,8 +213,328 @@ const surfaceCallbacks: SurfaceDispatchCallbacks = {
   },
   openThread: (threadId) => openThreadInApp(store.environmentId, threadId),
   openUrl: (url) => openUrl(url),
-  resync: () => client.reconnectNow()
+  resync: () => client.reconnectNow(),
+  startVoice: (deviceId, originSlot, opts) => voiceSessions.start(deviceId, originSlot, opts),
+  stopVoice: (deviceId) => voiceSessions.stop(deviceId),
+  cancelVoice: (deviceId) => voiceSessions.cancel(deviceId),
+  downloadVoiceModel: (deviceId, modelId) => voiceSessions.downloadModel(deviceId, modelId)
 };
+
+interface ActiveVoiceSession {
+  recorder: MicRecorder | null;
+  stream: VoiceStreamHandle | null;
+  cloudProvider?: "openai" | "xai" | "openrouter";
+  baseDraft: string;
+  lastUiUpdateAt: number;
+  downloadPoller: NodeJS.Timeout | null;
+}
+
+class VoiceSessionManager {
+  private sessions = new Map<string, ActiveVoiceSession>();
+
+  private cleanup(deviceId: string): void {
+    const active = this.sessions.get(deviceId);
+    if (!active) return;
+    if (active.downloadPoller) clearInterval(active.downloadPoller);
+    active.recorder?.abort();
+    active.stream?.abort();
+    this.sessions.delete(deviceId);
+  }
+
+  cancel(deviceId: string): void {
+    this.cleanup(deviceId);
+  }
+
+  async downloadModel(deviceId: string, modelId: string): Promise<void> {
+    const ov = store.getOverlay(deviceId);
+    if (ov.kind !== "voice") return;
+    store.updateVoiceOverlay(deviceId, { phase: "downloading", modelId });
+    try {
+      await client.downloadVoiceModel(modelId);
+    } catch (err) {
+      store.updateVoiceOverlay(deviceId, {
+        phase: "error",
+        errorMessage: `Download failed: ${String(err).slice(0, 100)}`
+      });
+      return;
+    }
+
+    // Poll /api/voice/status until ready, then automatically begin listening!
+    const existing = this.sessions.get(deviceId);
+    if (existing?.downloadPoller) clearInterval(existing.downloadPoller);
+    const poller = setInterval(() => {
+      void (async () => {
+        const cur = store.getOverlay(deviceId);
+        if (cur.kind !== "voice" || cur.phase !== "downloading") {
+          clearInterval(poller);
+          return;
+        }
+        try {
+          const st = await client.getVoiceStatus();
+          if (st.state === "ready" || st.state === "loaded" || st.state === "unloaded") {
+            clearInterval(poller);
+            await this.start(deviceId, cur.originSlot, {
+              autoSend: cur.autoSend,
+              sendMode: cur.sendMode,
+              usePostProcess: cur.usePostProcess
+            });
+          } else if (st.state === "missing-model") {
+            clearInterval(poller);
+            store.updateVoiceOverlay(deviceId, {
+              phase: "missing-model",
+              modelId: st.modelId,
+              modelName: st.model
+            });
+          }
+        } catch {
+          // keep polling
+        }
+      })();
+    }, 2_000);
+    poller.unref?.();
+    this.sessions.set(deviceId, {
+      recorder: null,
+      stream: null,
+      baseDraft: "",
+      lastUiUpdateAt: 0,
+      downloadPoller: poller
+    });
+  }
+
+  async start(
+    deviceId: string,
+    originSlot: number,
+    opts: {
+      append?: boolean;
+      autoSend?: boolean;
+      sendMode?: "auto" | "steer" | "queue";
+      usePostProcess?: boolean;
+    } = {}
+  ): Promise<void> {
+    const prevOv = store.getOverlay(deviceId);
+    const baseDraft =
+      opts.append && prevOv.kind === "voice" ? prevOv.draftText.trim() : "";
+    this.cleanup(deviceId);
+
+    const thread = store.getFocusedThread();
+    if (!thread) return;
+
+    store.openVoiceOverlay(originSlot, deviceId, {
+      threadId: thread.id,
+      autoSend: opts.autoSend ?? (prevOv.kind === "voice" ? prevOv.autoSend : false),
+      sendMode: opts.sendMode ?? (prevOv.kind === "voice" ? prevOv.sendMode : "auto"),
+      usePostProcess:
+        opts.usePostProcess ?? (prevOv.kind === "voice" ? prevOv.usePostProcess : false),
+      existingDraft: baseDraft,
+      phase: "listening"
+    });
+
+    // 1. Inspect T3 Code's built-in voice status & cloud speech keys
+    let cloudProvider: "openai" | "xai" | "openrouter" | undefined;
+    let canStreamLocal = false;
+    try {
+      const [status, cloudKeys] = await Promise.all([
+        client.getVoiceStatus(),
+        client.getVoiceCloudKeys()
+      ]);
+      const localReady =
+        status.supported &&
+        status.state !== "missing-model" &&
+        status.state !== "downloading" &&
+        status.state !== "unsupported";
+
+      if (localReady) {
+        canStreamLocal = status.supportsStreaming !== false;
+        if (status.state === "unloaded") {
+          void client.prepareVoiceModel().catch(() => {});
+        }
+      } else if (cloudKeys.openai) {
+        cloudProvider = "openai";
+      } else if (cloudKeys.xai) {
+        cloudProvider = "xai";
+      } else if (cloudKeys.openrouter) {
+        cloudProvider = "openrouter";
+      } else if (status.state === "downloading") {
+        store.updateVoiceOverlay(deviceId, {
+          phase: "downloading",
+          modelId: status.modelId,
+          modelName: status.model
+        });
+        return;
+      } else {
+        store.updateVoiceOverlay(deviceId, {
+          phase: "missing-model",
+          modelId: status.modelId,
+          modelName: status.model
+        });
+        return;
+      }
+    } catch (err) {
+      store.updateVoiceOverlay(deviceId, {
+        phase: "error",
+        errorMessage: `T3 Voice unavailable: ${String(err).slice(0, 100)}`
+      });
+      return;
+    }
+
+    const session: ActiveVoiceSession = {
+      recorder: null,
+      stream: null,
+      cloudProvider,
+      baseDraft,
+      lastUiUpdateAt: 0,
+      downloadPoller: null
+    };
+    this.sessions.set(deviceId, session);
+
+    const speechOpts = defaultSpeechOptions();
+
+    // 2. Open T3 live streaming WebSocket (/ws/voice) when local streaming is available
+    if (canStreamLocal && !cloudProvider) {
+      try {
+        session.stream = await client.openVoiceStream(speechOpts, {
+          onUpdate: (committed, tentative) => {
+            if (this.sessions.get(deviceId) !== session) return;
+            const joinedCommitted = [session.baseDraft, committed.trim()]
+              .filter(Boolean)
+              .join(" ");
+            store.updateVoiceOverlay(deviceId, {
+              committed: joinedCommitted,
+              tentative: tentative.trim()
+            });
+          },
+          onError: (message) => {
+            streamDeck.logger.warn(`T3 voice stream warning: ${message}`);
+          }
+        });
+      } catch (err) {
+        streamDeck.logger.warn(`WS /ws/voice fallback to batch transcribe: ${String(err)}`);
+        session.stream = null;
+      }
+    }
+
+    // Check session wasn't cancelled while opening WS
+    if (this.sessions.get(deviceId) !== session) {
+      session.stream?.abort();
+      return;
+    }
+
+    // 3. Start local microphone capture (16kHz mono Float32 LE PCM)
+    try {
+      const recorder = new MicRecorder({
+        onChunk: (pcm, level, durationSec) => {
+          if (this.sessions.get(deviceId) !== session) return;
+          session.stream?.sendChunk(pcm);
+          const now = Date.now();
+          if (now - session.lastUiUpdateAt >= 220) {
+            session.lastUiUpdateAt = now;
+            store.updateVoiceOverlay(deviceId, { level, durationSec });
+          }
+        },
+        onError: (message) => {
+          if (this.sessions.get(deviceId) !== session) return;
+          this.cleanup(deviceId);
+          store.updateVoiceOverlay(deviceId, { phase: "error", errorMessage: message });
+        }
+      });
+      session.recorder = recorder;
+      recorder.start();
+    } catch (err) {
+      this.cleanup(deviceId);
+      store.updateVoiceOverlay(deviceId, {
+        phase: "error",
+        errorMessage: err instanceof Error ? err.message : String(err)
+      });
+    }
+  }
+
+  async stop(deviceId: string): Promise<void> {
+    const session = this.sessions.get(deviceId);
+    const ov = store.getOverlay(deviceId);
+    if (!session || ov.kind !== "voice" || ov.phase !== "listening") return;
+
+    store.updateVoiceOverlay(deviceId, { phase: "transcribing", level: 0 });
+
+    try {
+      const captured = session.recorder
+        ? await session.recorder.stop()
+        : { pcm: new Uint8Array(0), durationSec: ov.durationSec };
+      session.recorder = null;
+
+      let rawText = "";
+      if (session.stream) {
+        try {
+          rawText = await session.stream.finish();
+        } catch (err) {
+          streamDeck.logger.warn(`WS finish failed, falling back to batch transcribe: ${String(err)}`);
+          session.stream.abort();
+          session.stream = null;
+          if (captured.pcm.byteLength > 0) {
+            rawText = await client.transcribeVoiceBatch(
+              captured.pcm,
+              defaultSpeechOptions(),
+              session.cloudProvider
+            );
+          }
+        }
+      } else if (captured.pcm.byteLength > 0) {
+        rawText = await client.transcribeVoiceBatch(
+          captured.pcm,
+          defaultSpeechOptions(),
+          session.cloudProvider
+        );
+      }
+
+      this.sessions.delete(deviceId);
+
+      // Re-check overlay wasn't closed mid-transcription
+      const curOv = store.getOverlay(deviceId);
+      if (curOv.kind !== "voice") return;
+
+      let cleaned = rawText.trim();
+      if (cleaned && curOv.usePostProcess) {
+        try {
+          cleaned = await client.postProcessVoiceTranscript(cleaned, session.baseDraft);
+        } catch {
+          // keep raw transcript on post-process error
+        }
+      }
+
+      const finalDraft = [session.baseDraft, cleaned].filter(Boolean).join(" ").trim();
+      if (curOv.autoSend && finalDraft) {
+        const thread = store.getThreadById(curOv.threadId) ?? store.getFocusedThread();
+        if (thread) {
+          store.updateVoiceOverlay(deviceId, {
+            phase: "sending",
+            draftText: finalDraft,
+            durationSec: captured.durationSec
+          });
+          await client.sendQuickMessage(thread.id, finalDraft, curOv.sendMode, thread.activeRunId);
+          store.setToast("voice", thread.activeRunId ? "STEERED" : "VOICE SENT", "#10B981", 1200);
+          store.closeOverlay(deviceId);
+          return;
+        }
+      }
+
+      store.updateVoiceOverlay(deviceId, {
+        phase: "draft",
+        committed: finalDraft,
+        tentative: "",
+        draftText: finalDraft,
+        durationSec: captured.durationSec,
+        scrollLine: 0
+      });
+    } catch (err) {
+      this.cleanup(deviceId);
+      store.updateVoiceOverlay(deviceId, {
+        phase: "error",
+        errorMessage: err instanceof Error ? err.message : String(err)
+      });
+    }
+  }
+}
+
+const voiceSessions = new VoiceSessionManager();
 
 function geometryForAction(actionObj: {
   device?: { id?: string; type?: number; size?: { columns?: number; rows?: number } };
@@ -266,21 +590,31 @@ function setDialSvg(dial: DialAction, svg: string): Promise<void> {
 }
 
 function renderKeySurface(key: KeyAction, baseSvg: () => string): Promise<void> {
-  const geom = geometryForAction(key);
-  if (store.getOverlay(geom.deviceId).kind !== "none" && key.coordinates) {
-    const ovSvg = renderOverlayKeySvg(store, key.coordinates.column, key.coordinates.row, geom);
-    if (ovSvg) return setKeySvg(key, ovSvg);
+  try {
+    const geom = geometryForAction(key);
+    if (store.getOverlay(geom.deviceId).kind !== "none" && key.coordinates) {
+      const ovSvg = renderOverlayKeySvg(store, key.coordinates.column, key.coordinates.row, geom);
+      if (ovSvg) return setKeySvg(key, ovSvg);
+    }
+    return setKeySvg(key, baseSvg());
+  } catch (err) {
+    streamDeck.logger.error(`renderKeySurface failed (${key.manifestId}): ${String(err)}`);
+    return Promise.resolve();
   }
-  return setKeySvg(key, baseSvg());
 }
 
 function renderDialSurface(dial: DialAction, baseSvg: () => string): Promise<void> {
-  const geom = geometryForAction(dial);
-  if (store.getOverlay(geom.deviceId).kind !== "none") {
-    const ovSvg = renderOverlayDialSvg(store, dial.coordinates.column, geom);
-    if (ovSvg) return setDialSvg(dial, ovSvg);
+  try {
+    const geom = geometryForAction(dial);
+    if (store.getOverlay(geom.deviceId).kind !== "none") {
+      const ovSvg = renderOverlayDialSvg(store, dial.coordinates.column, geom);
+      if (ovSvg) return setDialSvg(dial, ovSvg);
+    }
+    return setDialSvg(dial, baseSvg());
+  } catch (err) {
+    streamDeck.logger.error(`renderDialSurface failed (${dial.manifestId}): ${String(err)}`);
+    return Promise.resolve();
   }
-  return setDialSvg(dial, baseSvg());
 }
 
 function routeOverlayKeyDown(ev: KeyDownEvent): boolean {
@@ -710,6 +1044,7 @@ class QuickPromptAction extends SingletonAction<QuickPromptSettings> {
     const slot = keySlot(ev.action, 5);
     const deviceId = geometryForAction(ev.action).deviceId;
     pressTracker.down(ev.action.id, () => {
+      streamDeck.logger.info(`Opening Quick Prompts overlay (slot=${slot}, device=${deviceId})`);
       store.openPromptsOverlay(slot, deviceId);
     });
   }
@@ -1109,15 +1444,30 @@ class ThreadDialAction extends SingletonAction {
     store.stepFocus(ev.payload.ticks);
   }
 
+  override onDialDown(ev: DialDownEvent): void {
+    const geom = geometryForAction(ev.action);
+    if (store.getOverlay(geom.deviceId).kind !== "none") return;
+    pressTracker.down(ev.action.id, () => {
+      const current = store.returnToCurrentThread();
+      if (current) {
+        store.setToast("thread-dial", "CURRENT THREAD", "#38BDF8", 900);
+      } else {
+        void ev.action.showAlert();
+      }
+    });
+  }
+
   override onDialUp(ev: DialUpEvent): void {
     if (routeOverlayDialTapOrPress(ev.action)) return;
-    const thread = store.getFocusedThread();
-    if (!thread) {
-      void ev.action.showAlert();
-      return;
-    }
-    openThreadInApp(store.environmentId, thread.id);
-    store.setToast("thread-dial", "OPENED IN T3", "#38BDF8", 900);
+    pressTracker.up(ev.action.id, () => {
+      const thread = store.getFocusedThread();
+      if (!thread) {
+        void ev.action.showAlert();
+        return;
+      }
+      openThreadInApp(store.environmentId, thread.id);
+      store.setToast("thread-dial", "OPENED IN T3", "#38BDF8", 900);
+    });
   }
 
   override onTouchTap(ev: TouchTapEvent): void {
@@ -1162,7 +1512,8 @@ class ThreadDialAction extends SingletonAction {
         index,
         total,
         store.connectionState === "connected",
-        store.getToast("thread-dial")
+        store.getToast("thread-dial"),
+        store.isPeekingAway()
       );
     });
   }
@@ -1513,6 +1864,141 @@ class UsageDialAction extends SingletonAction {
   }
 }
 
+interface VoicePromptSettings {
+  triggerMode?: "toggle" | "ptt";
+  autoSend?: boolean;
+  sendMode?: "auto" | "steer" | "queue";
+  usePostProcess?: boolean;
+}
+
+@action({ UUID: `${PLUGIN_ID}.voice-prompt` })
+class VoicePromptAction extends SingletonAction {
+  private settingsByAction = new Map<string, VoicePromptSettings>();
+  private activePtt = new Set<string>();
+
+  override onWillAppear(ev: WillAppearEvent): void | Promise<void> {
+    this.settingsByAction.set(ev.action.id, (ev.payload.settings ?? {}) as VoicePromptSettings);
+    if (ev.action.isKey()) return this.renderKey(ev.action);
+    if (ev.action.isDial()) return this.renderDial(ev.action);
+  }
+
+  override onDidReceiveSettings(ev: DidReceiveSettingsEvent): void {
+    this.settingsByAction.set(ev.action.id, (ev.payload.settings ?? {}) as VoicePromptSettings);
+    if (ev.action.isKey()) void this.renderKey(ev.action);
+    else if (ev.action.isDial()) void this.renderDial(ev.action);
+  }
+
+  override onKeyDown(ev: KeyDownEvent): void {
+    if (routeOverlayKeyDown(ev)) return;
+    const cfg = this.settingsByAction.get(ev.action.id) ?? {};
+    const slot = keySlot(ev.action, 5);
+    const deviceId = geometryForAction(ev.action).deviceId;
+    const triggerMode = cfg.triggerMode === "ptt" ? "ptt" : "toggle";
+
+    if (triggerMode === "ptt") {
+      this.activePtt.add(ev.action.id);
+      void voiceSessions.start(deviceId, slot, {
+        autoSend: Boolean(cfg.autoSend),
+        sendMode: cfg.sendMode === "queue" || cfg.sendMode === "steer" ? cfg.sendMode : "auto",
+        usePostProcess: Boolean(cfg.usePostProcess)
+      });
+      return;
+    }
+
+    // In toggle mode: quick tap opens Voice & starts listening; hold acts as instant Push-to-Talk!
+    pressTracker.down(ev.action.id, () => {
+      this.activePtt.add(ev.action.id);
+      void voiceSessions.start(deviceId, slot, {
+        autoSend: Boolean(cfg.autoSend),
+        sendMode: cfg.sendMode === "queue" || cfg.sendMode === "steer" ? cfg.sendMode : "auto",
+        usePostProcess: Boolean(cfg.usePostProcess)
+      });
+    });
+  }
+
+  override onKeyUp(ev: KeyUpEvent): void {
+    const deviceId = geometryForAction(ev.action).deviceId;
+    if (this.activePtt.has(ev.action.id)) {
+      this.activePtt.delete(ev.action.id);
+      pressTracker.consumeLongRelease(ev.action.id);
+      pressTracker.clear(ev.action.id);
+      void voiceSessions.stop(deviceId);
+      return;
+    }
+    if (routeOverlayKeyUp(ev)) return;
+    const cfg = this.settingsByAction.get(ev.action.id) ?? {};
+    const slot = keySlot(ev.action, 5);
+    pressTracker.up(ev.action.id, () => {
+      void voiceSessions.start(deviceId, slot, {
+        autoSend: Boolean(cfg.autoSend),
+        sendMode: cfg.sendMode === "queue" || cfg.sendMode === "steer" ? cfg.sendMode : "auto",
+        usePostProcess: Boolean(cfg.usePostProcess)
+      });
+    });
+  }
+
+  override onDialRotate(ev: DialRotateEvent): void {
+    routeOverlayDialRotate(ev);
+  }
+
+  override onDialUp(ev: DialUpEvent): void {
+    if (routeOverlayDialTapOrPress(ev.action)) return;
+    const cfg = this.settingsByAction.get(ev.action.id) ?? {};
+    const deviceId = geometryForAction(ev.action).deviceId;
+    void voiceSessions.start(deviceId, 5, {
+      autoSend: Boolean(cfg.autoSend),
+      sendMode: cfg.sendMode === "queue" || cfg.sendMode === "steer" ? cfg.sendMode : "auto",
+      usePostProcess: Boolean(cfg.usePostProcess)
+    });
+  }
+
+  override onTouchTap(ev: TouchTapEvent): void {
+    if (routeOverlayDialTapOrPress(ev.action)) return;
+    const cfg = this.settingsByAction.get(ev.action.id) ?? {};
+    const deviceId = geometryForAction(ev.action).deviceId;
+    void voiceSessions.start(deviceId, 5, {
+      autoSend: Boolean(cfg.autoSend),
+      sendMode: cfg.sendMode === "queue" || cfg.sendMode === "steer" ? cfg.sendMode : "auto",
+      usePostProcess: Boolean(cfg.usePostProcess)
+    });
+  }
+
+  refreshAll(): void {
+    this.actions.forEach((a) => {
+      if (a.isKey()) void this.renderKey(a);
+      else if (a.isDial()) void this.renderDial(a);
+    });
+  }
+
+  private renderKey(key: KeyAction): Promise<void> {
+    return renderKeySurface(key, () => {
+      const cfg = this.settingsByAction.get(key.id) ?? {};
+      const triggerMode = cfg.triggerMode === "ptt" ? "ptt" : "toggle";
+      return renderVoiceKey(
+        store.getFocusedThread(),
+        store.connectionState === "connected",
+        triggerMode,
+        store.getToast("voice")
+      );
+    });
+  }
+
+  private renderDial(dial: DialAction): Promise<void> {
+    return renderDialSurface(dial, () => {
+      const cfg = this.settingsByAction.get(dial.id) ?? {};
+      const thread = store.getFocusedThread();
+      const proj = thread ? store.getProjectName(thread.projectId) : "T3";
+      return renderVoiceDialCanvas(
+        thread,
+        proj,
+        store.connectionState === "connected",
+        Boolean(cfg.autoSend),
+        store.getToast("voice")
+      );
+    });
+  }
+}
+
 // ============================================================
 // BOOTSTRAP & COALESCED RE-RENDERING
 // ============================================================
@@ -1526,6 +2012,7 @@ const quickPromptAction = new QuickPromptAction();
 const openThreadAction = new OpenThreadAction();
 const snoozeSyncAction = new SnoozeSyncAction();
 const threadSlotAction = new ThreadSlotAction();
+const voicePromptAction = new VoicePromptAction();
 
 const threadDialAction = new ThreadDialAction();
 const modelDialAction = new ModelDialAction();
@@ -1542,6 +2029,7 @@ const allRefreshers = [
   openThreadAction,
   snoozeSyncAction,
   threadSlotAction,
+  voicePromptAction,
   threadDialAction,
   modelDialAction,
   modeDialAction,

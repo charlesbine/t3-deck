@@ -257,6 +257,32 @@
       ],
       "Tooltip": "Live session and weekly utilization gauges across all connected T3 Code providers. Key: tap to cycle, hold to refresh.",
       "UUID": "com.charlesbine.t3-deck.usage-dial"
+    },
+    {
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "Encoder": {
+        "Icon": "imgs/action-voice",
+        "TriggerDescription": {
+          "Push": "Start or stop T3 built-in voice STT",
+          "Rotate": "Scroll voice transcript draft",
+          "Touch": "Start or stop T3 built-in voice STT"
+        },
+        "layout": "layouts/t3-canvas-dial.json"
+      },
+      "Icon": "imgs/action-voice",
+      "Name": "Voice Prompt (STT)",
+      "PropertyInspectorPath": "ui/voice-prompt.html",
+      "States": [
+        {
+          "Image": "imgs/key-default",
+          "ShowTitle": false
+        }
+      ],
+      "Tooltip": "Speak directly to the focused T3 Code thread using T3's built-in streaming STT (/ws/voice). Tap to toggle, hold for Push-to-Talk, review draft & SEND.",
+      "UUID": "com.charlesbine.t3-deck.voice-prompt"
     }
   ],
   "Author": "Charles Bine",
@@ -319,5 +345,5 @@
     "MinimumVersion": "7.1"
   },
   "UUID": "com.charlesbine.t3-deck",
-  "Version": "1.2.0.0"
+  "Version": "1.3.0.0"
 }

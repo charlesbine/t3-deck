@@ -3,7 +3,7 @@
 **Real-time [T3 Code](https://github.com/pingdotgg/t3code) mission control for Elgato Stream Deck.**
 
 [![CI](https://github.com/charlesbine/t3-deck/actions/workflows/ci.yml/badge.svg)](https://github.com/charlesbine/t3-deck/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-1.2.0-38BDF8.svg)](#whats-new-in-v12--multi-device-support)
+[![Version](https://img.shields.io/badge/version-1.3.0-38BDF8.svg)](#whats-new-in-v13--native-t3-voice-stt--dial-1-snap-back)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Elgato Stream Deck](https://img.shields.io/badge/hardware-Plus%20%7C%20Plus%20XL%20%7C%20MK.2%20%7C%20XL%20%7C%20Neo%20%7C%20Mini-111827.svg)](#supported-elgato-devices)
 
@@ -20,6 +20,20 @@ Approve or inspect multi-subagent shell commands without turning back to your mo
 Hold any contextual key — or tap **`APPROVE?`** when agents are waiting — and T3 Deck seamlessly transforms all 8 LCD keys and turns the 4 flush dials into a single **`1600×200` panoramic touch strip**:
 
 ![T3 Deck v1.1 6-Step Interactive Storyboard](marketing/t3-deck-flow-storyboard.png)
+
+---
+
+## What's New in v1.3 — Native T3 Voice STT & Dial 1 Snap-Back
+
+- **Built-In T3 Code Voice STT (`Voice Prompt (STT)` & Quick Prompts → `VOICE`):**
+  - Streams 16 kHz Float32 mic audio directly into T3 Code's own built-in **`WS /ws/voice`** streaming engine (with automatic fallback to `POST /api/voice/transcribe` and T3's configured cloud speech providers, plus optional `/api/voice/post-process` cleanup) — no extra apps, no extra API keys, and works even when T3 Code isn't the focused window.
+  - **Live VU Waveform & Real-Time Captions:** Watch your words stream live across the `1600×200` panoramic touch strip (or bezel-safe info cards on MK.2/XL/Neo/Mini/mixed pages) as you speak.
+  - **`DRAFT → SEND` Overlay (or Walkie-Talkie Auto-Send):** Stop talking to review your full transcript right on the deck with **`SEND` / `STEER`**, **`QUEUE`**, **`APPEND`**, **`RE-RECORD`**, and **`CANCEL`** — or toggle **Auto-Send** in Property Inspector for instant hands-free dispatch.
+  - **1-Tap T3 Model Install:** If T3's local Parakeet/Whisper model hasn't been downloaded yet, T3 Deck offers a 1-tap **`DOWNLOAD`** button that installs it directly in T3 Code and begins recording when ready.
+  - **Tap-to-Toggle + Instant Hold-to-Talk:** Standalone **`Voice Prompt (STT)`** action works on both Keys and Dials (tap toggles recording, hold ≥450ms works as instant Push-to-Talk), and **`VOICE`** is also built right into the **Quick Prompts** drawer (hold **`CONTINUE`**) for zero-reconfig access on existing profiles.
+- **Dial 1 Peeking + Hold-to-Return & Smart 20s Idle Snap-Back:**
+  - Scrubbing Dial 1 away from your active T3 Code thread shows an amber **`PEEKING`** pill and **`OPEN · HOLD: LIVE`** footer hint.
+  - **Press & hold Dial 1** to immediately jump back to your current live thread, or leave it idle for **20 seconds** to automatically snap back (paused whenever any overlay is open).
 
 ---
 

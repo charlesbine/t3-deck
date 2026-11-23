@@ -7,7 +7,7 @@ const PLUGIN_UUID = "com.charlesbine.t3-deck";
 const PLUGIN_META = {
   Name: "T3 Deck",
   UUID: PLUGIN_UUID,
-  Version: "1.2.0.0"
+  Version: "1.3.0.0"
 };
 
 interface ActionDef {
@@ -48,6 +48,7 @@ const A = {
   open: { name: "Open Thread / PR", uuid: `${PLUGIN_UUID}.open-thread` },
   snooze: { name: "Snooze / Sync", uuid: `${PLUGIN_UUID}.snooze-sync` },
   slot: { name: "Thread Slot", uuid: `${PLUGIN_UUID}.thread-slot` },
+  voice: { name: "Voice Prompt (STT)", uuid: `${PLUGIN_UUID}.voice-prompt` },
   thread: { name: "Thread Navigator", uuid: `${PLUGIN_UUID}.thread-dial` },
   model: { name: "Model & Provider", uuid: `${PLUGIN_UUID}.model-dial` },
   mode: { name: "Mode & Effort", uuid: `${PLUGIN_UUID}.mode-dial` },
@@ -148,9 +149,9 @@ function plusXlKeypad(): Record<string, ActionDef> {
     "1,2": A.prompt("COMMIT & PR", "Commit these changes with a clear message and open a PR."),
     "2,2": A.prompt("REVIEW DIFF", "Review your git diff critically and check for edge cases."),
     "3,2": A.prompt("FIX CI", "Inspect the failing CI checks and fix them."),
-    // Row 3 cols 0..3: 4 extra one-tap prompts (no redundancy with Dials 1..4 right below!)
-    "0,3": A.prompt("IMPLEMENT", "Implement the proposed plan cleanly."),
-    "1,3": A.prompt("EXPLAIN", "Explain what you changed and why, concisely."),
+    // Row 3 cols 0..3: Dedicated Voice STT + 3 extra one-tap prompts (no redundancy with Dials 1..4 right below!)
+    "0,3": A.voice,
+    "1,3": A.prompt("IMPLEMENT", "Implement the proposed plan cleanly."),
     "2,3": A.prompt("FIX TYPES", "Run typecheck and fix any TypeScript errors."),
     "3,3": A.prompt("STATUS", "Give me a quick status summary of what's done and what's left.")
   };
@@ -223,10 +224,10 @@ function xlKeypad(): Record<string, ActionDef> {
     "1,2": A.model,
     "2,2": A.mode,
     "3,2": A.usage,
-    // Row 3 cols 0..3: 4 Quick Prompt presets
-    "0,3": A.prompt("RUN TESTS", "Run the full test suite and fix any failures."),
-    "1,3": A.prompt("COMMIT & PR", "Commit these changes with a clear message and open a PR."),
-    "2,3": A.prompt("REVIEW DIFF", "Review your git diff critically and check for edge cases."),
+    // Row 3 cols 0..3: Dedicated Voice STT + 3 Quick Prompt presets
+    "0,3": A.voice,
+    "1,3": A.prompt("RUN TESTS", "Run the full test suite and fix any failures."),
+    "2,3": A.prompt("COMMIT & PR", "Commit these changes with a clear message and open a PR."),
     "3,3": A.prompt("FIX CI", "Inspect the failing CI checks and fix them.")
   };
   // Right 4x4 Fleet Wall (cols 4..7, rows 0..3 = 16 live Thread Slots!)
